@@ -1,0 +1,17 @@
+{
+  "name": "Sal's Kitchen",
+  "short_name": "Sal's Kitchen",
+  "description": "Chef Sal Romano's restaurant-style recipes for your home kitchen — with a servings scaler, cooking mode, timers and a shopping list.",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f8f2e7",
+  "theme_color": "#2a1d17",
+  "icons": [
+    { "src": "assets/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "assets/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "assets/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

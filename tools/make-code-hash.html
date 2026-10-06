@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Make an access code hash — Sal's Kitchen</title>
+<style>
+  :root { color-scheme: light dark; --bg: #f8f2e7; --ink: #2a1d17; --card: #fffcf6; --line: #e2d5c1; --accent: #a8321f; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #16110e; --ink: #f3eadc; --card: #211914; --line: #3f3229; --accent: #c4472f; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 18px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.6rem; margin: 0 0 8px; }
+  label { display: block; font-weight: 700; margin: 20px 0 6px; }
+  input, textarea { width: 100%; font: inherit; padding: 12px; border: 2px solid var(--line); border-radius: 10px; background: var(--card); color: inherit; }
+  textarea { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 15px; min-height: 90px; }
+  button { min-height: 48px; padding: 0 20px; font: inherit; font-weight: 700; border: 0; border-radius: 10px; background: var(--accent); color: #fff; margin-top: 12px; cursor: pointer; }
+  ol { padding-left: 1.3em; }
+  .note { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; }
+  code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.9em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Make an access code hash</h1>
+  <p>Type a new access code. This page turns it into a "hash" — a scrambled version you can safely put in <code>config.js</code>. The code itself never leaves this page.</p>
+
+  <label for="code">Access code</label>
+  <input id="code" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="for example SAL-2026-ABCD">
+
+  <label for="out">Line to paste into config.js</label>
+  <textarea id="out" readonly placeholder="The line appears here as you type."></textarea>
+  <button id="copy" type="button">Copy line</button>
+  <span id="copied" role="status"></span>
+
+  <h2>What to do next</h2>
+  <ol>
+    <li>Open <code>config.js</code> in your GitHub repository and click the pencil (Edit) icon.</li>
+    <li>Find the list called <code>ACCESS_CODE_HASHES</code>.</li>
+    <li>Paste the copied line on a new line inside the square brackets <code>[ ]</code>, below the other codes.</li>
+    <li>Click <strong>Commit changes</strong>. The new code works within a few minutes.</li>
+  </ol>
+  <p class="note">Codes are not case-sensitive and extra spaces are ignored, so <code>sal-2026-abcd</code> and <code>SAL-2026-ABCD</code> are the same code.</p>
+</main>
+<script src="../js/sha256.js"></script>
+<script>
+  const input = document.getElementById('code');
+  const out = document.getElementById('out');
+  const status = document.getElementById('copied');
+  let latest = 0;
+  input.addEventListener('input', async () => {
+    const job = ++latest;
+    const code = SalHash.normalizeCode(input.value);
+    if (!code) { out.value = ''; return; }
+    const hash = await SalHash.sha256Hex(code);
+    if (job !== latest) return;
+    out.value = '  "' + hash + '", // ' + new Date().toISOString().slice(0, 10);
+    status.textContent = '';
+  });
+  document.getElementById('copy').addEventListener('click', async () => {
+    if (!out.value) return;
+    try { await navigator.clipboard.writeText(out.value); }
+    catch (e) { out.select(); document.execCommand('copy'); }
+    status.textContent = ' Copied!';
+  });
+</script>
+</body>
+</html>
