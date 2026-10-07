@@ -7,13 +7,8 @@ import * as timers from './timers.js';
 import { icon } from './icons.js';
 import { esc, uid, formatDate, debounce, fold, isIOS, isAndroid, downloadBlob, shareFile, isoDay, copyText } from './util.js';
 import * as install from './install.js';
-import * as weeks from './weeks.js';
-import { surprisePicks } from './plan.js';
-import { mealMoney, dollars } from './money.js';
-import { combineLines, isPantryLine, pantryNames, PANTRY_OPTIONS } from './merge.js';
 
-const APP_VERSION = '2.0';
-const PLAN_FACTORS = [0.5, 1, 2, 3]; // per-meal amounts in the planner
+const APP_VERSION = '1.0';
 const STEPS = [0.5, 1, 1.5, 2, 2.5, 3, 4, 5, 6]; // what − and + move between
 const PRESETS = [0.5, 1, 2, 3];
 const GREETING = "Grate your own cheese. Taste before you serve. Let's cook.";
@@ -24,7 +19,6 @@ const backBtn = document.getElementById('back-btn');
 const listBtn = document.getElementById('list-btn');
 const listCount = document.getElementById('list-count');
 const settingsBtn = document.getElementById('settings-btn');
-const planBtn = document.getElementById('plan-btn') || makePlanButton();
 const toastEl = document.getElementById('toast');
 const tray = document.getElementById('timer-tray');
 
@@ -33,26 +27,6 @@ let favorites = new Set();
 let shopping = db.emptyShopping();
 let view = { name: null, cleanup: [] };
 const home = { q: '', chip: 'all', scroll: 0 };
-// Planner settings (meta 'planSettings'), pantry staples (meta 'pantry'), savings total (store 'savings').
-let planSettings = { weekStart: 'mon', lunch: false, hideMoney: false, combined: false };
-let pantry = { ids: [], custom: [] };
-let savingsTotal = 0;
-const planner = { start: null }; // first day of the week on screen
-const planWeeks = new Map(); // ISO week → { week, days: { 'YYYY-MM-DD': { dinner, lunch } } }
-
-// A cached page from v1 may not have the Plan button yet.
-function makePlanButton() {
-  const a = document.createElement('a');
-  a.className = 'header-btn';
-  a.href = '#/plan';
-  a.id = 'plan-btn';
-  a.hidden = true;
-  a.setAttribute('aria-label', 'Week plan');
-  a.innerHTML = `${icon('calendar')}<span class="header-btn__label">Plan</span>`;
-  const list = document.getElementById('list-btn');
-  list.parentNode.insertBefore(a, list);
-  return a;
-}
 
 const byNum = new Map(RECIPES.map((r) => [r.num, r]));
 const chapterByNum = new Map(CHAPTERS.map((c) => [c.num, c]));
@@ -74,12 +48,6 @@ function setChrome({ title, back = null, nav = true }) {
   backBtn.onclick = back ? () => { location.hash = back; } : null;
   listBtn.hidden = !nav;
   settingsBtn.hidden = !nav;
-  planBtn.hidden = !nav;
-  const page = (location.hash.replace(/^#\/?/, '').split('/')[0]) || '';
-  [[planBtn, 'plan'], [listBtn, 'list'], [settingsBtn, 'settings']].forEach(([b, p]) => {
-    if (page === p) b.setAttribute('aria-current', 'page');
-    else b.removeAttribute('aria-current');
-  });
   updateListBadge();
 }
 
@@ -108,13 +76,9 @@ function scaledHtml(line, factor) {
     .join('');
 }
 
-const pantrySet = () => pantryNames(pantry.ids, pantry.custom);
-
-// Items still to buy. Pantry staples ("You probably have these") don't count.
 function shoppingRemaining() {
-  const names = pantrySet();
   let n = 0;
-  shopping.groups.forEach((g) => g.items.forEach((i) => { if (!i.checked && !isPantryLine(i.text, names)) n++; }));
+  shopping.groups.forEach((g) => g.items.forEach((i) => { if (!i.checked) n++; }));
   shopping.custom.forEach((i) => { if (!i.checked) n++; });
   return n;
 }
@@ -235,7 +199,7 @@ let keepScroll = false;
 async function route() {
   view.cleanup.forEach((fn) => fn());
   view = { name: null, cleanup: [] };
-  document.body.classList.remove('cooking', 'page-plan');
+  document.body.classList.remove('cooking');
 
   const parts = (location.hash.replace(/^#\/?/, '') || '').split('/').filter(Boolean).map(decodeURIComponent);
 
@@ -245,7 +209,6 @@ async function route() {
   try {
     if (parts[0] === 'settings') return await renderSettings();
     if (parts[0] === 'list') return renderList();
-    if (parts[0] === 'plan') return await renderPlan();
     if ((parts[0] === 'recipe' || parts[0] === 'cook') && parts[1]) {
       const r = byNum.get(Number(parts[1]));
       if (!r) {
@@ -406,28 +369,6 @@ function resultsHtml() {
     </section>`).join('');
 }
 
-const SAVINGS_LINES = [
-  'Restaurant taste. Your prices. That’s the whole idea.',
-  'That’s a nice dinner out you didn’t need.',
-  'Keep cooking. The pot pays you back.',
-];
-
-function savingsHtml() {
-  if (!moneyOn()) return '';
-  if (savingsTotal < 0.5) {
-    return `<section class="savings savings--start" aria-label="Your week plan">
-      <p class="savings__line">${icon('calendar')} Plan your week, cook it, tap <strong>We made it</strong> — and watch what you keep add up.</p>
-      <a class="btn btn--secondary btn--small" href="#/plan">Plan this week</a>
-    </section>`;
-  }
-  const line = SAVINGS_LINES[Math.floor(savingsTotal) % SAVINGS_LINES.length];
-  return `<section class="savings" aria-label="Money saved" id="savings-card">
-    <p class="savings__big">You've kept <strong id="savings-total">~${dollars(savingsTotal)}</strong> in your pocket since you started cooking with Sal.</p>
-    <p class="savings__sal">“${esc(line)}” <span class="muted">— Sal</span></p>
-    <p class="small muted">Compared with a typical restaurant price, estimate. <a href="#/plan">Week plan</a></p>
-  </section>`;
-}
-
 async function renderHome() {
   setChrome({ title: '' });
   const restoreScroll = home.scroll;
@@ -444,7 +385,6 @@ async function renderHome() {
         <p class="hello__sig">— Chef Sal Romano</p>
       </div>
     </section>
-    ${savingsHtml()}
     <div id="install-slot">${await installBannerHtml()}</div>
     <div class="finder">
       <label for="q" class="visually-hidden">Search recipes or ingredients</label>
@@ -589,7 +529,6 @@ async function renderRecipe(r) {
       <div class="actions-2">
         <button type="button" class="btn btn--secondary fav-toggle" data-action="fav" aria-pressed="${favorites.has(r.num)}">${icon('heart')}<span>${favorites.has(r.num) ? 'Saved' : 'Favorite'}</span></button>
         <button type="button" class="btn btn--secondary" data-action="add-list">${icon('cart')}<span>Add to shopping list</span></button>
-        <button type="button" class="btn btn--secondary actions-2__wide" data-action="add-plan">${icon('calendar')}<span>Add to plan</span></button>
       </div>
     </div>
 
@@ -713,8 +652,6 @@ async function renderRecipe(r) {
     } else if (a === 'add-list') {
       const updated = addToShopping(r, prog.factor);
       toast(updated ? `Shopping list updated (${prettyFactor(prog.factor)}).` : `Added ${r.ingredients.length} items to your shopping list.`);
-    } else if (a === 'add-plan') {
-      openAddToPlan(r, prog.factor);
     }
   };
   main.addEventListener('click', onClick);
@@ -747,7 +684,6 @@ async function renderCook(r, startStep) {
   const prog = await loadProgress(r.num);
   const total = r.steps.length;
   let idx = Math.min(Math.max(1, startStep), total + 1); // total + 1 = the "finished" screen
-  let countedMade = false;
 
   main.innerHTML = `
   <div class="cook">
@@ -793,10 +729,6 @@ async function renderCook(r, startStep) {
         </aside>
         <p><a class="btn btn--secondary btn--block" href="#/recipe/${r.num}">Back to the recipe</a></p>
         <p><a class="btn btn--ghost btn--block" href="#/">All recipes</a></p>`;
-      if (!countedMade) {
-        countedMade = true;
-        markCookedToday(r).then(madeToast).catch((e) => console.error(e));
-      }
     } else {
       const text = r.steps[idx - 1];
       stepEl.innerHTML = `
@@ -909,60 +841,15 @@ async function renderCook(r, startStep) {
 //  5. Shopping list
 // ====================================================================
 
-// What the list shows: per-recipe (default) or combined, with pantry staples set aside.
-// Every row has a key that leads back to the saved items:
-//   g:<group id>:<index>   one item of a recipe
-//   m:<key>,<key>,…        a combined row (several items added up)
-function listModel() {
-  const names = pantrySet();
-  const pantryRows = [];
-  const sections = [];
-  const rowFor = (keys, text, items, sub = '') => ({ key: keys.length > 1 ? `m:${keys.join(',')}` : keys[0], text, checked: items.every((i) => i.checked), sub });
-  if (planSettings.combined) {
-    const lines = [];
-    shopping.groups.forEach((g) => g.items.forEach((it, i) => lines.push({ text: it.text, ref: `g:${g.id}:${i}` })));
-    const rows = combineLines(lines).map((c) => {
-      const items = c.refs.map(findShopItem).filter(Boolean);
-      const titles = [...new Set(c.refs.map((ref) => (shopping.groups.find((g) => g.id === ref.split(':')[1]) || {}).title).filter(Boolean))];
-      return rowFor(c.refs, c.text, items, titles.join(' + '));
-    });
-    const visible = rows.filter((r) => !isPantryLine(r.text, names));
-    pantryRows.push(...rows.filter((r) => isPantryLine(r.text, names)));
-    if (visible.length) sections.push({ id: 'combined', title: 'Everything you need', rows: visible });
-  } else {
-    shopping.groups.forEach((g) => {
-      const rows = g.items.map((it, i) => rowFor([`g:${g.id}:${i}`], it.text, [it], g.title));
-      pantryRows.push(...rows.filter((r) => isPantryLine(r.text, names)));
-      sections.push({ id: g.id, group: g, rows: rows.filter((r) => !isPantryLine(r.text, names)) });
-    });
-  }
-  return { sections, pantryRows };
-}
-
-function findShopItem(key) {
-  const [kind, id, i] = key.split(':');
-  if (kind === 'c') return shopping.custom.find((x) => x.id === id);
-  const g = shopping.groups.find((x) => x.id === id);
-  return g && g.items[Number(i)];
-}
-
-function findShopItems(key) {
-  if (key.startsWith('m:')) return key.slice(2).split(',').map(findShopItem).filter(Boolean);
-  const it = findShopItem(key);
-  return it ? [it] : [];
-}
-
 function shoppingText() {
   const anyLeft = shoppingRemaining() > 0;
   const keep = (i) => !anyLeft || !i.checked;
   const lines = ["Sal's Kitchen — Shopping list", ''];
-  const { sections, pantryRows } = listModel();
-  sections.forEach((sec) => {
-    const rows = sec.rows.filter(keep);
-    if (!rows.length) return;
-    const g = sec.group;
-    lines.push(g ? `${g.title}${g.factor !== 1 ? ` (${prettyFactor(g.factor)})` : ''}` : sec.title);
-    rows.forEach((i) => lines.push(`☐ ${i.text}`));
+  shopping.groups.forEach((g) => {
+    const items = g.items.filter(keep);
+    if (!items.length) return;
+    lines.push(`${g.title}${g.factor !== 1 ? ` (${prettyFactor(g.factor)})` : ''}`);
+    items.forEach((i) => lines.push(`☐ ${i.text}`));
     lines.push('');
   });
   const extras = shopping.custom.filter(keep);
@@ -971,19 +858,13 @@ function shoppingText() {
     extras.forEach((i) => lines.push(`☐ ${i.text}`));
     lines.push('');
   }
-  const pan = pantryRows.filter((i) => !i.checked);
-  if (pan.length) {
-    lines.push('Check the pantry');
-    pan.forEach((i) => lines.push(`☐ ${i.text}`));
-    lines.push('');
-  }
   return lines.join('\n').trim() + '\n';
 }
 
-function shopItemHtml(item, key, sub = '') {
-  return `<li><button type="button" class="ing shop-item" role="checkbox" aria-checked="${!!item.checked}" data-item="${esc(key)}">
+function shopItemHtml(item, key) {
+  return `<li><button type="button" class="ing shop-item" role="checkbox" aria-checked="${!!item.checked}" data-item="${key}">
     <span class="tickbox" aria-hidden="true">${icon('check')}</span>
-    <span class="ing__text">${esc(item.text)}${sub ? `<span class="shop-from">${esc(sub)}</span>` : ''}</span>
+    <span class="ing__text">${esc(item.text)}</span>
   </button></li>`;
 }
 
@@ -1011,36 +892,14 @@ function showCopyDialog(text) {
 function renderList() {
   setChrome({ title: 'Shopping list', back: '#/' });
   const empty = !shopping.groups.length && !shopping.custom.length;
-  const { sections, pantryRows } = listModel();
-  const groupsHtml = sections.map((sec) => {
-    const g = sec.group;
-    if (!g) {
-      return `<section class="list-group" aria-labelledby="lg-combined">
-        <div class="list-group__head"><h2 id="lg-combined">${esc(sec.title)}</h2></div>
-        <ul class="ing-list">${sec.rows.map((r) => shopItemHtml(r, r.key, r.sub)).join('')}</ul>
-      </section>`;
-    }
-    return `
+  const groupsHtml = shopping.groups.map((g) => `
     <section class="list-group" aria-labelledby="lg-${esc(g.id)}">
       <div class="list-group__head">
         <h2 id="lg-${esc(g.id)}"><a href="#/recipe/${g.recipeNum}">${esc(g.title)}</a>${g.factor !== 1 ? ` <span class="factor-pill">${prettyFactor(g.factor)}</span>` : ''}</h2>
         <button type="button" class="icon-btn no-print" data-remove-group="${esc(g.id)}" aria-label="Remove ${esc(g.title)} from the list">${icon('trash')}</button>
       </div>
-      ${sec.rows.length ? `<ul class="ing-list">${sec.rows.map((r) => shopItemHtml(r, r.key)).join('')}</ul>` : '<p class="small muted">Nothing to buy here — you probably have it all.</p>'}
-    </section>`;
-  }).join('');
-  const viewToggle = shopping.groups.length ? `
-    <div class="seg no-print" role="group" aria-label="Show the list">
-      <button type="button" class="seg__btn" data-list-view="recipe" aria-pressed="${!planSettings.combined}">By recipe</button>
-      <button type="button" class="seg__btn" data-list-view="combined" aria-pressed="${!!planSettings.combined}">Combined</button>
-    </div>
-    ${planSettings.combined ? '<p class="small muted no-print">Same ingredients from different recipes are added up when that\'s safe. The rest stay as they are.</p>' : ''}` : '';
-  const pantryHtml = pantryRows.length ? `
-    <details class="list-group pantry-box" id="pantry-box">
-      <summary><span>You probably have these</span> <span class="muted small">(${pantryRows.length})</span></summary>
-      <p class="small muted">Your pantry staples. Change them in <a href="#/settings">Settings</a>.</p>
-      <ul class="ing-list">${pantryRows.map((r) => shopItemHtml(r, r.key, planSettings.combined ? r.sub : '')).join('')}</ul>
-    </details>` : '';
+      <ul class="ing-list">${g.items.map((it, i) => shopItemHtml(it, `g:${g.id}:${i}`)).join('')}</ul>
+    </section>`).join('');
   const customHtml = shopping.custom.length ? `
     <section class="list-group" aria-labelledby="lg-custom">
       <div class="list-group__head"><h2 id="lg-custom">My extras</h2></div>
@@ -1055,7 +914,7 @@ function renderList() {
       <input type="text" id="new-item" placeholder="Add something else (e.g. paper towels)" autocomplete="off" enterkeyhint="done">
       <button type="submit" class="btn">${icon('plus')}<span>Add</span></button>
     </form>
-    ${empty ? `<p class="empty">${icon('cart')}<br>Your list is empty.<br>Open a recipe and tap <strong>Add to shopping list</strong>, or make one from your week plan.</p><div class="actions-2"><a class="btn btn--secondary" href="#/">${icon('book')} Browse recipes</a><a class="btn btn--secondary" href="#/plan">${icon('calendar')} Week plan</a></div>` : `
+    ${empty ? `<p class="empty">${icon('cart')}<br>Your list is empty.<br>Open a recipe and tap <strong>Add to shopping list</strong>.</p><p><a class="btn btn--secondary btn--block" href="#/">${icon('book')} Browse recipes</a></p>` : `
       <p class="muted small no-print" id="list-status"></p>
       <div class="list-actions no-print">
         <button type="button" class="btn" data-action="share">${icon('share')} Share list</button>
@@ -1063,8 +922,7 @@ function renderList() {
         <button type="button" class="btn btn--secondary" data-action="clear-checked">${icon('check')} Clear checked</button>
         <button type="button" class="btn btn--danger" data-action="clear-all">${icon('trash')} Clear all</button>
       </div>
-      ${viewToggle}
-      ${groupsHtml}${customHtml}${pantryHtml}`}
+      ${groupsHtml}${customHtml}`}
   `;
 
   const status = main.querySelector('#list-status');
@@ -1074,6 +932,13 @@ function renderList() {
     status.textContent = left ? `${left} item${left === 1 ? '' : 's'} left to get. Tap an item when it's in your cart.` : 'All done — everything is checked off.';
   };
   updateStatus();
+
+  const findItem = (key) => {
+    const [kind, id, i] = key.split(':');
+    if (kind === 'c') return shopping.custom.find((x) => x.id === id);
+    const g = shopping.groups.find((x) => x.id === id);
+    return g && g.items[Number(i)];
+  };
 
   const onSubmit = (e) => {
     e.preventDefault();
@@ -1093,22 +958,12 @@ function renderList() {
     const t = e.target;
     const itemBtn = t.closest('[data-item]');
     if (itemBtn) {
-      const items = findShopItems(itemBtn.dataset.item);
-      if (!items.length) return;
-      const on = !items.every((i) => i.checked);
-      items.forEach((i) => { i.checked = on; });
-      itemBtn.setAttribute('aria-checked', String(on));
+      const item = findItem(itemBtn.dataset.item);
+      if (!item) return;
+      item.checked = !item.checked;
+      itemBtn.setAttribute('aria-checked', String(item.checked));
       saveShopping();
       updateStatus();
-      return;
-    }
-    const lv = t.closest('[data-list-view]');
-    if (lv) {
-      const combined = lv.dataset.listView === 'combined';
-      if (combined === !!planSettings.combined) return;
-      planSettings.combined = combined;
-      await savePlanSettings();
-      refresh();
       return;
     }
     const rg = t.closest('[data-remove-group]');
@@ -1161,588 +1016,7 @@ function renderList() {
 }
 
 // ====================================================================
-//  6. Week planner
-// ====================================================================
-
-const MEAL_LABEL = { lunch: 'Lunch', dinner: 'Dinner' };
-const meals = () => (planSettings.lunch ? ['lunch', 'dinner'] : ['dinner']);
-const moneyOn = () => !planSettings.hideMoney;
-
-async function savePlanSettings() {
-  try { await db.setMeta('planSettings', { ...planSettings }); } catch (e) { console.error(e); }
-}
-
-async function savePantry() {
-  try { await db.setMeta('pantry', { ids: [...pantry.ids], custom: [...pantry.custom] }); } catch (e) { console.error(e); }
-  updateListBadge();
-}
-
-async function loadSavingsTotal() {
-  const list = await db.listSavings();
-  savingsTotal = list.reduce((sum, x) => sum + (Number(x.saved) || 0), 0);
-  return savingsTotal;
-}
-
-async function ensureWeeks(dates) {
-  const keys = [...new Set(dates.map(weeks.isoWeekKey))].filter((k) => !planWeeks.has(k));
-  const recs = await Promise.all(keys.map((k) => db.getPlanWeek(k)));
-  keys.forEach((k, i) => {
-    const r = recs[i];
-    planWeeks.set(k, r && r.days && typeof r.days === 'object' ? r : { week: k, days: {} });
-  });
-}
-
-function getSlot(date, meal) {
-  const rec = planWeeks.get(weeks.isoWeekKey(date));
-  const day = rec && rec.days[date];
-  return (day && day[meal]) || null;
-}
-
-let planChain = Promise.resolve();
-async function setSlots(changes) {
-  // changes: [[date, meal, slot | null], …] — saved together, one record per ISO week.
-  await ensureWeeks(changes.map((c) => c[0]));
-  const touched = new Set();
-  for (const [date, meal, slot] of changes) {
-    const key = weeks.isoWeekKey(date);
-    const rec = planWeeks.get(key);
-    const day = { ...(rec.days[date] || {}) };
-    if (slot) day[meal] = slot;
-    else delete day[meal];
-    if (Object.keys(day).length) rec.days[date] = day;
-    else delete rec.days[date];
-    touched.add(key);
-  }
-  const copies = [...touched].map((k) => JSON.parse(JSON.stringify(planWeeks.get(k))));
-  planChain = planChain.then(() => Promise.all(copies.map((c) => db.putPlanWeek(c)))).catch((e) => {
-    console.error(e);
-    toast("Couldn't save. Your device may be out of space.", 5000);
-  });
-  return planChain;
-}
-
-const setSlot = (date, meal, slot) => setSlots([[date, meal, slot]]);
-
-function currentWeekStart() {
-  return weeks.startOfWeek(weeks.today(), planSettings.weekStart);
-}
-
-function weekTitle(start) {
-  const diff = Math.round((weeks.fromDay(start) - weeks.fromDay(currentWeekStart())) / 86400000 / 7);
-  if (diff === 0) return 'This week';
-  if (diff === 1) return 'Next week';
-  if (diff === -1) return 'Last week';
-  return diff > 0 ? `In ${diff} weeks` : `${-diff} weeks ago`;
-}
-
-// Everything planned in the 7 days, in order: [{ date, meal, slot, recipe }]
-function plannedMeals(days) {
-  const out = [];
-  days.forEach((date) => meals().forEach((meal) => {
-    const slot = getSlot(date, meal);
-    if (slot && byNum.get(slot.num)) out.push({ date, meal, slot, recipe: byNum.get(slot.num) });
-  }));
-  return out;
-}
-
-function weekMoney(days) {
-  const t = { home: 0, restaurant: 0, saved: 0 };
-  plannedMeals(days).forEach(({ slot, recipe }) => {
-    if (slot.leftover) return; // already counted on the day it was cooked
-    const m = mealMoney(recipe, slot.factor || 1);
-    t.home += m.home;
-    t.restaurant += m.restaurant;
-  });
-  t.saved = Math.max(0, t.restaurant - t.home);
-  return t;
-}
-
-function slotHtml(date, meal) {
-  const slot = getSlot(date, meal);
-  const r = slot && byNum.get(slot.num);
-  const label = `<p class="slot__meal">${MEAL_LABEL[meal]}</p>`;
-  const where = `${weeks.dayName(date)} ${MEAL_LABEL[meal].toLowerCase()}`;
-  if (!r) {
-    return `<div class="slot slot--empty" data-date="${date}" data-meal="${meal}">
-      ${label}
-      <div class="slot__btns">
-        <button type="button" class="btn btn--secondary btn--small" data-action="pick" aria-label="Add a recipe to ${esc(where)}">${icon('plus')} Add a recipe</button>
-        <button type="button" class="btn btn--ghost btn--small" data-action="leftovers" aria-label="Leftovers for ${esc(where)}">Leftovers</button>
-      </div>
-    </div>`;
-  }
-  const canDrag = window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches;
-  const isPastOrToday = date <= weeks.today();
-  const moveBtn = `<button type="button" class="btn btn--ghost btn--small" data-action="move" aria-label="Move ${esc(r.title)} to another day">${icon('move')} Move to…</button>`;
-  const removeBtn = `<button type="button" class="icon-btn" data-action="remove" aria-label="Remove ${esc(r.title)} from ${esc(where)}">${icon('trash')}</button>`;
-  if (slot.leftover) {
-    return `<div class="slot slot--leftover" data-date="${date}" data-meal="${meal}"${canDrag ? ' draggable="true"' : ''}>
-      ${label}
-      <p class="slot__title">Leftovers from ${esc(weeks.dayName(slot.leftover.date))}</p>
-      <p class="slot__sub"><a href="#/recipe/${r.num}">${esc(r.title)}</a> · nothing to shop</p>
-      <div class="slot__btns">${moveBtn}${removeBtn}</div>
-    </div>`;
-  }
-  const f = slot.factor || 1;
-  const money = moneyOn() ? (() => { const m = mealMoney(r, f); return ` · ~${dollars(m.home)} at home`; })() : '';
-  return `<div class="slot${slot.made ? ' slot--made' : ''}" data-date="${date}" data-meal="${meal}"${canDrag ? ' draggable="true"' : ''}>
-    ${label}
-    <p class="slot__title"><a href="#/recipe/${r.num}">${esc(r.title)}</a></p>
-    <p class="slot__sub">${esc(servesText(r, f))}${money}</p>
-    <div class="slot__factors" role="group" aria-label="How much for ${esc(where)}">
-      ${PLAN_FACTORS.map((x) => `<button type="button" class="chip chip--mini" data-plan-factor="${x}" aria-pressed="${f === x}">${prettyFactor(x)}</button>`).join('')}
-    </div>
-    <div class="slot__btns">
-      ${isPastOrToday ? `<button type="button" class="btn btn--small ${slot.made ? 'btn--made' : 'btn--secondary'}" data-action="made" aria-pressed="${!!slot.made}">${icon('check')} ${slot.made ? 'Made it' : 'We made it'}</button>` : ''}
-      ${moveBtn}${removeBtn}
-    </div>
-  </div>`;
-}
-
-function dayHtml(date) {
-  const isToday = date === weeks.today();
-  const any = meals().some((m) => getSlot(date, m));
-  return `<section class="plan-day${isToday ? ' plan-day--today' : ''}" data-day="${date}" aria-labelledby="pd-${date}">
-    <div class="plan-day__head">
-      <h2 id="pd-${date}">${esc(weeks.dayName(date))} <span class="plan-day__date">${esc(weeks.shortDate(date))}</span>${isToday ? ' <span class="today-pill">Today</span>' : ''}</h2>
-      ${any ? `<button type="button" class="btn btn--ghost btn--small" data-action="clear-day" data-date="${date}" aria-label="Clear ${esc(weeks.dayName(date))}">Clear day</button>` : ''}
-    </div>
-    ${meals().map((m) => slotHtml(date, m)).join('')}
-  </section>`;
-}
-
-function moneyFooterHtml(days) {
-  if (!moneyOn()) return '';
-  const t = weekMoney(days);
-  if (!t.home && !t.restaurant) {
-    return `<section class="money-foot" aria-label="Money this week" id="money-foot"><p class="money-foot__line">Plan a few dinners and I'll show you what you keep.</p></section>`;
-  }
-  return `<section class="money-foot" aria-label="Money this week" id="money-foot">
-    <p class="money-foot__line">This week at home: <strong data-money="home">~${dollars(t.home)}</strong>. At a restaurant: <strong data-money="restaurant">~${dollars(t.restaurant)}</strong>. You keep <strong class="money-foot__keep" data-money="keep">~${dollars(t.saved)}</strong>.</p>
-    <p class="small muted">Restaurant numbers are a typical restaurant price, estimate — not a quote. Home costs are Sal's estimates. Tax and tip not included.</p>
-  </section>`;
-}
-
-function menuText(days) {
-  const lines = [`This week's menu (${weeks.rangeLabel(days[0])})`, ''];
-  days.forEach((date) => {
-    const parts = meals().map((meal) => {
-      const slot = getSlot(date, meal);
-      const r = slot && byNum.get(slot.num);
-      if (!r) return null;
-      const what = slot.leftover ? `Leftovers (${r.title})` : `${r.title}${(slot.factor || 1) !== 1 ? ` (${prettyFactor(slot.factor)})` : ''}`;
-      return planSettings.lunch ? `${MEAL_LABEL[meal]}: ${what}` : what;
-    }).filter(Boolean);
-    if (parts.length) lines.push(`${weeks.dayName(date)} — ${parts.join(' · ')}`);
-  });
-  lines.push('', "Cooked with Sal's Kitchen");
-  return lines.join('\n') + '\n';
-}
-
-async function shareText(title, text, copiedMsg) {
-  if (navigator.share) {
-    try {
-      await navigator.share({ title, text });
-      return;
-    } catch (err) {
-      if (err && err.name === 'AbortError') return;
-    }
-  }
-  if (await copyText(text)) toast(copiedMsg, 4000);
-  else showCopyDialog(text);
-}
-
-// A bottom sheet / dialog. Returns { el, close }.
-function openSheet(title, bodyHtml, onClick) {
-  const prevFocus = document.activeElement;
-  const el = document.createElement('div');
-  el.className = 'drawer-backdrop';
-  const id = uid('sheet');
-  el.innerHTML = `<div class="drawer" role="dialog" aria-modal="true" aria-labelledby="${id}">
-    <div class="drawer__head"><h2 id="${id}">${title}</h2>
-      <button type="button" class="round-btn" data-close aria-label="Close">${icon('close')}</button></div>
-    ${bodyHtml}
-  </div>`;
-  const close = () => {
-    el.remove();
-    document.removeEventListener('keydown', onKey);
-    document.body.classList.remove('drawer-open');
-    if (prevFocus && prevFocus.isConnected) prevFocus.focus();
-  };
-  const onKey = (e) => { if (e.key === 'Escape') close(); };
-  el.addEventListener('click', (e) => {
-    if (e.target === el || e.target.closest('[data-close]')) return close();
-    onClick(e, close);
-  });
-  document.addEventListener('keydown', onKey);
-  document.body.appendChild(el);
-  document.body.classList.add('drawer-open');
-  view.cleanup.push(() => { if (el.isConnected) close(); });
-  const first = el.querySelector('input, [data-pick], [data-choose]') || el.querySelector('[data-close]');
-  first.focus();
-  return { el, close };
-}
-
-// "+" → searchable recipe picker with chapter chips.
-function openRecipePicker(where, onPick) {
-  const state = { q: '', chip: 'all' };
-  const chips = [['all', 'All'], ['fav', `${icon('heart')} Favorites`], ...CHAPTERS.map((c) => [String(c.num), esc(chipLabel(c))])];
-  const listHtml = () => {
-    const words = fold(state.q).split(/\s+/).filter(Boolean);
-    let list = RECIPES.filter((r) => matches(r, words));
-    if (state.chip === 'fav') list = list.filter((r) => favorites.has(r.num));
-    else if (state.chip !== 'all') list = list.filter((r) => r.chapter === Number(state.chip));
-    if (!list.length) return '<p class="empty">Nothing matches. Try one word, like <em>chicken</em>.</p>';
-    return `<ul class="pick-list">${list.map((r) => `<li><button type="button" class="pick" data-pick="${r.num}">
-      <span class="pick__title">${esc(r.title)}</span>
-      <span class="pick__meta">${esc(chipLabel(chapterByNum.get(r.chapter)))} · ${esc(r.time)} · ${esc(servesText(r))}</span>
-    </button></li>`).join('')}</ul>`;
-  };
-  const sheet = openSheet(`Add to ${esc(where)}`, `
-    <div class="search">${icon('search')}
-      <label for="pick-q" class="visually-hidden">Search recipes</label>
-      <input type="search" id="pick-q" placeholder="Search recipes or ingredients" autocomplete="off" enterkeyhint="search">
-    </div>
-    <div class="chips chips--sheet" role="group" aria-label="Show recipes from">
-      ${chips.map(([k, label]) => `<button type="button" class="chip" data-pchip="${k}" aria-pressed="${k === 'all'}">${label}</button>`).join('')}
-    </div>
-    <div id="pick-results">${listHtml()}</div>`, (e, close) => {
-    const chip = e.target.closest('[data-pchip]');
-    if (chip) {
-      state.chip = chip.dataset.pchip;
-      sheet.el.querySelectorAll('[data-pchip]').forEach((c) => c.setAttribute('aria-pressed', String(c === chip)));
-      sheet.el.querySelector('#pick-results').innerHTML = listHtml();
-      return;
-    }
-    const pick = e.target.closest('[data-pick]');
-    if (pick) {
-      close();
-      onPick(byNum.get(Number(pick.dataset.pick)));
-    }
-  });
-  const input = sheet.el.querySelector('#pick-q');
-  input.addEventListener('input', debounce(() => {
-    state.q = input.value;
-    sheet.el.querySelector('#pick-results').innerHTML = listHtml();
-  }, 120));
-}
-
-// Pick a day (and meal) from a week. choices: [{ date, meal, label, note, disabled }]
-function openDayChooser(title, intro, choices, onChoose) {
-  openSheet(esc(title), `${intro ? `<p>${intro}</p>` : ''}
-    <ul class="pick-list">${choices.map((c, i) => `<li><button type="button" class="pick" data-choose="${i}"${c.disabled ? ' disabled' : ''}>
-      <span class="pick__title">${esc(c.label)}</span>${c.note ? `<span class="pick__meta">${esc(c.note)}</span>` : ''}
-    </button></li>`).join('')}</ul>`, (e, close) => {
-    const b = e.target.closest('[data-choose]');
-    if (!b || b.disabled) return;
-    close();
-    onChoose(choices[Number(b.dataset.choose)]);
-  });
-}
-
-function slotNote(date, meal) {
-  const s = getSlot(date, meal);
-  const r = s && byNum.get(s.num);
-  if (!r) return 'Free';
-  return s.leftover ? `Leftovers (${r.title})` : r.title;
-}
-
-async function markMade(date, meal, made) {
-  const slot = getSlot(date, meal);
-  const r = slot && byNum.get(slot.num);
-  if (!r || slot.leftover || !!slot.made === made) return null;
-  const next = { ...slot, made };
-  let saved = 0;
-  if (made) {
-    const m = mealMoney(r, slot.factor || 1);
-    const entry = { id: uid('s'), date, meal, num: r.num, factor: slot.factor || 1, servings: m.servings, home: m.home, restaurant: m.restaurant, saved: m.saved, at: new Date().toISOString() };
-    await db.putSaving(entry);
-    next.savedId = entry.id;
-    saved = m.saved;
-  } else {
-    if (slot.savedId) await db.deleteSaving(slot.savedId);
-    delete next.savedId;
-  }
-  await setSlot(date, meal, next);
-  await loadSavingsTotal();
-  return { recipe: r, saved };
-}
-
-function madeToast(res) {
-  if (!res) return;
-  toast(moneyOn() && res.saved > 0 ? `Bravo! ~${dollars(res.saved)} stays in your pocket.` : `Bravo! ${res.recipe.title} — done.`, 3500);
-}
-
-async function renderPlan() {
-  setChrome({ title: 'Week plan', back: '#/' });
-  document.body.classList.add('page-plan');
-  if (!planner.start) planner.start = currentWeekStart();
-  // The week-start setting may have changed since this week was shown.
-  planner.start = weeks.startOfWeek(planner.start, planSettings.weekStart);
-  const days = weeks.weekDays(planner.start);
-  await ensureWeeks(days);
-  const title = weekTitle(planner.start);
-  const isCurrent = title === 'This week';
-  const planned = plannedMeals(days);
-
-  main.innerHTML = `
-    <div class="plan-top">
-      <h1 class="page-title" tabindex="-1">${esc(title)}</h1>
-      <nav class="week-nav" aria-label="Weeks">
-        <button type="button" class="round-btn" data-action="prev-week" aria-label="Previous week">${icon('back')}</button>
-        <p class="week-nav__label" aria-live="polite">${esc(weeks.rangeLabel(planner.start))}</p>
-        <button type="button" class="round-btn" data-action="next-week" aria-label="Next week">${icon('next')}</button>
-      </nav>
-      ${isCurrent ? '' : '<p class="week-nav__back"><button type="button" class="btn btn--ghost btn--small" data-action="this-week">Back to this week</button></p>'}
-    </div>
-    ${planned.length ? '' : `<aside class="sal-says sal-says--plan" aria-label="Sal says">
-      <img class="sal-says__avatar" src="assets/sal-avatar.png" alt="" width="64" height="64">
-      <div><p class="sal-says__label">Sal says</p><blockquote class="sal-says__quote">Plan it once, cook it all week. No more 6 o'clock panic.</blockquote></div>
-    </aside>`}
-    <div class="plan-actions">
-      <button type="button" class="btn" data-action="surprise">${icon('shuffle')} Surprise me</button>
-      <button type="button" class="btn btn--secondary" data-action="make-list"${planned.some((p) => !p.slot.leftover) ? '' : ' disabled'}>${icon('cart')} Make shopping list for this week</button>
-      <button type="button" class="btn btn--secondary" data-action="share-menu"${planned.length ? '' : ' disabled'}>${icon('share')} Share this week's menu</button>
-      <button type="button" class="btn btn--danger" data-action="clear-week"${planned.length ? '' : ' disabled'}>${icon('trash')} Clear week</button>
-    </div>
-    <div class="plan-week">${days.map(dayHtml).join('')}</div>
-    ${moneyFooterHtml(days)}
-  `;
-
-  const where = (date, meal) => `${weeks.dayName(date)} ${MEAL_LABEL[meal].toLowerCase()}`;
-
-  const onClick = async (e) => {
-    const t = e.target;
-    const slotEl = t.closest('.slot');
-    const date = slotEl && slotEl.dataset.date;
-    const meal = slotEl && slotEl.dataset.meal;
-    const fb = t.closest('[data-plan-factor]');
-    if (fb && slotEl) {
-      const slot = getSlot(date, meal);
-      if (!slot) return;
-      const f = Number(fb.dataset.planFactor);
-      if (slot.made && slot.savedId) {
-        // Keep the savings history in step with the amount actually cooked.
-        await markMade(date, meal, false);
-        await setSlot(date, meal, { ...getSlot(date, meal), factor: f });
-        await markMade(date, meal, true);
-      } else {
-        await setSlot(date, meal, { ...slot, factor: f });
-      }
-      return refresh();
-    }
-    const btn = t.closest('[data-action]');
-    if (!btn) return;
-    const a = btn.dataset.action;
-    if (a === 'prev-week' || a === 'next-week') {
-      planner.start = weeks.addDays(planner.start, a === 'prev-week' ? -7 : 7);
-      return refresh();
-    }
-    if (a === 'this-week') {
-      planner.start = currentWeekStart();
-      return refresh();
-    }
-    if (a === 'pick') {
-      openRecipePicker(where(date, meal), async (r) => {
-        await setSlot(date, meal, { num: r.num, factor: 1 });
-        toast(`${r.title} — ${weeks.dayName(date)}.`);
-        refresh();
-      });
-      return;
-    }
-    if (a === 'leftovers') {
-      const sources = [];
-      days.forEach((d) => meals().forEach((m) => {
-        const s = getSlot(d, m);
-        if (s && !s.leftover && byNum.get(s.num) && (d < date || (d === date && m === 'lunch' && meal === 'dinner'))) {
-          sources.push({ date: d, meal: m, label: `${weeks.dayName(d)}${planSettings.lunch ? ` ${MEAL_LABEL[m].toLowerCase()}` : ''}`, note: byNum.get(s.num).title });
-        }
-      }));
-      if (!sources.length) return toast('Plan a meal earlier in the week first — then eat the leftovers.', 4000);
-      openDayChooser(`Leftovers for ${where(date, meal)}`, 'Which meal are you finishing up? Nothing goes on the shopping list.', sources, async (c) => {
-        await setSlot(date, meal, { num: getSlot(c.date, c.meal).num, factor: 1, leftover: { date: c.date, meal: c.meal } });
-        toast('Leftovers it is. Smart.');
-        refresh();
-      });
-      return;
-    }
-    if (a === 'move') {
-      const choices = [];
-      days.forEach((d) => meals().forEach((m) => {
-        if (d === date && m === meal) return;
-        const occupied = getSlot(d, m);
-        choices.push({ date: d, meal: m, label: `${weeks.dayName(d)}${planSettings.lunch ? ` ${MEAL_LABEL[m].toLowerCase()}` : ''}`, note: occupied ? `Swap with ${slotNote(d, m)}` : 'Free' });
-      }));
-      const r = byNum.get(getSlot(date, meal).num);
-      openDayChooser(`Move ${r.title}`, '', choices, (c) => moveSlot(date, meal, c.date, c.meal));
-      return;
-    }
-    if (a === 'remove') {
-      const s = getSlot(date, meal);
-      await setSlot(date, meal, null);
-      toast(`${byNum.get(s.num).title} removed.`);
-      return refresh();
-    }
-    if (a === 'made') {
-      const slot = getSlot(date, meal);
-      const res = await markMade(date, meal, !slot.made);
-      if (res && !slot.made) madeToast(res);
-      return refresh();
-    }
-    if (a === 'clear-day') {
-      const d = btn.dataset.date;
-      await setSlots(meals().map((m) => [d, m, null]));
-      toast(`${weeks.dayName(d)} cleared.`);
-      return refresh();
-    }
-    if (a === 'clear-week') {
-      if (!confirm('Clear every meal planned this week?')) return;
-      await setSlots(days.flatMap((d) => ['lunch', 'dinner'].map((m) => [d, m, null])));
-      toast('Week cleared. Fresh start.');
-      return refresh();
-    }
-    if (a === 'surprise') {
-      const empty = days.filter((d) => !getSlot(d, 'dinner'));
-      if (!empty.length) return toast('Every dinner is planned already. Clear a day for a surprise.', 4000);
-      const taken = plannedMeals(days).map((p) => p.recipe.num);
-      const picks = surprisePicks(empty.length, taken, RECIPES);
-      if (!picks.length) return toast("I'm out of new ideas for this week — the rest is up to you.", 4000);
-      await setSlots(picks.map((r, i) => [empty[i], 'dinner', { num: r.num, factor: 1 }]));
-      toast(picks.length === 1 ? 'One dinner, picked.' : `${picks.length} dinners, picked. No repeats.`);
-      return refresh();
-    }
-    if (a === 'make-list') {
-      const totals = new Map();
-      plannedMeals(days).forEach(({ slot, recipe }) => {
-        if (slot.leftover) return;
-        totals.set(recipe.num, (totals.get(recipe.num) || 0) + (slot.factor || 1));
-      });
-      totals.forEach((f, num) => addToShopping(byNum.get(num), f));
-      toast(`${totals.size} recipe${totals.size === 1 ? '' : 's'} added to your shopping list.`);
-      location.hash = '#/list';
-      return;
-    }
-    if (a === 'share-menu') {
-      return shareText("This week's menu — Sal's Kitchen", menuText(days), 'Menu copied. Paste it into a text message or email.');
-    }
-  };
-
-  // Drag and drop between days (computer with a mouse). Phones use "Move to…".
-  let dragFrom = null;
-  const onDragStart = (e) => {
-    const s = e.target.closest && e.target.closest('.slot[draggable="true"]');
-    if (!s) return;
-    dragFrom = { date: s.dataset.date, meal: s.dataset.meal };
-    e.dataTransfer.effectAllowed = 'move';
-    try { e.dataTransfer.setData('text/plain', `${dragFrom.date}|${dragFrom.meal}`); } catch (err) { /* fine */ }
-    s.classList.add('slot--dragging');
-  };
-  const onDragOver = (e) => {
-    const s = e.target.closest && e.target.closest('.slot');
-    if (!s || !dragFrom) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    main.querySelectorAll('.slot--over').forEach((x) => { if (x !== s) x.classList.remove('slot--over'); });
-    s.classList.add('slot--over');
-  };
-  const onDrop = (e) => {
-    const s = e.target.closest && e.target.closest('.slot');
-    if (!s || !dragFrom) return;
-    e.preventDefault();
-    const from = dragFrom;
-    dragFrom = null;
-    if (from.date === s.dataset.date && from.meal === s.dataset.meal) return refresh();
-    moveSlot(from.date, from.meal, s.dataset.date, s.dataset.meal);
-  };
-  const onDragEnd = () => {
-    dragFrom = null;
-    main.querySelectorAll('.slot--over, .slot--dragging').forEach((x) => x.classList.remove('slot--over', 'slot--dragging'));
-  };
-
-  main.addEventListener('click', onClick);
-  main.addEventListener('dragstart', onDragStart);
-  main.addEventListener('dragover', onDragOver);
-  main.addEventListener('drop', onDrop);
-  main.addEventListener('dragend', onDragEnd);
-  view.cleanup.push(() => {
-    main.removeEventListener('click', onClick);
-    main.removeEventListener('dragstart', onDragStart);
-    main.removeEventListener('dragover', onDragOver);
-    main.removeEventListener('drop', onDrop);
-    main.removeEventListener('dragend', onDragEnd);
-  });
-  afterRender('.page-title');
-}
-
-async function moveSlot(fromDate, fromMeal, toDate, toMeal) {
-  const a = getSlot(fromDate, fromMeal);
-  const b = getSlot(toDate, toMeal);
-  if (!a) return;
-  await setSlots([[toDate, toMeal, a], [fromDate, fromMeal, b]]);
-  const r = byNum.get(a.num);
-  toast(`${a.leftover ? 'Leftovers' : r.title} moved to ${weeks.dayName(toDate)}.`);
-  refresh();
-}
-
-// From a recipe page: "Add to plan" → choose a day.
-function openAddToPlan(r, factor) {
-  const f = PLAN_FACTORS.includes(factor) ? factor : 1;
-  let start = currentWeekStart();
-  const build = async () => {
-    const days = weeks.weekDays(start);
-    await ensureWeeks(days);
-    const choices = [];
-    days.forEach((d) => meals().forEach((m) => {
-      const note = slotNote(d, m);
-      choices.push({ date: d, meal: m, label: `${weeks.dayName(d)} ${weeks.shortDate(d)}${planSettings.lunch ? ` · ${MEAL_LABEL[m]}` : ''}`, note: note === 'Free' ? 'Free' : `Replaces ${note}`, past: d < weeks.today() });
-    }));
-    return choices;
-  };
-  const show = async () => {
-    const choices = await build();
-    const isThis = start === currentWeekStart();
-    const sheet = openSheet(`Add ${esc(r.title)} to…`, `
-      <div class="seg" role="group" aria-label="Which week">
-        <button type="button" class="seg__btn" data-week="0" aria-pressed="${isThis}">This week</button>
-        <button type="button" class="seg__btn" data-week="1" aria-pressed="${!isThis}">Next week</button>
-      </div>
-      <p class="small muted">Amount: <strong>${prettyFactor(f)}</strong>. You can change it in the planner.</p>
-      <ul class="pick-list">${choices.map((c, i) => `<li><button type="button" class="pick${c.past ? ' pick--past' : ''}" data-choose="${i}">
-        <span class="pick__title">${esc(c.label)}</span><span class="pick__meta">${esc(c.note)}</span></button></li>`).join('')}</ul>`, async (e, close) => {
-      const wk = e.target.closest('[data-week]');
-      if (wk) {
-        const next = weeks.addDays(currentWeekStart(), wk.dataset.week === '1' ? 7 : 0);
-        if (next === start) return;
-        start = next;
-        close();
-        show();
-        return;
-      }
-      const b = e.target.closest('[data-choose]');
-      if (!b) return;
-      const c = choices[Number(b.dataset.choose)];
-      close();
-      await setSlot(c.date, c.meal, { num: r.num, factor: f });
-      toast(`Planned for ${weeks.dayName(c.date)}. Open Plan to see your week.`, 3500);
-    });
-    return sheet;
-  };
-  show();
-}
-
-// When cooking mode is finished: if this recipe is on today's plan, count it as made.
-async function markCookedToday(r) {
-  const d = weeks.today();
-  await ensureWeeks([d]);
-  for (const meal of ['dinner', 'lunch']) {
-    const s = getSlot(d, meal);
-    if (s && s.num === r.num && !s.leftover && !s.made) return markMade(d, meal, true);
-  }
-  return null;
-}
-
-// ====================================================================
-//  7. Settings
+//  6. Settings
 // ====================================================================
 
 function getTheme() {
@@ -1783,35 +1057,6 @@ async function renderSettings() {
       </fieldset>
     </section>
 
-    <section class="section" aria-labelledby="plan-set-title" id="plan-settings">
-      <h2 id="plan-set-title">Week plan</h2>
-      <fieldset class="theme-choice">
-        <legend class="label">My week starts on</legend>
-        <label><input type="radio" name="weekStart" value="mon" ${planSettings.weekStart !== 'sun' ? 'checked' : ''}> Monday</label>
-        <label><input type="radio" name="weekStart" value="sun" ${planSettings.weekStart === 'sun' ? 'checked' : ''}> Sunday</label>
-      </fieldset>
-      <div class="toggles">
-        <label class="toggle"><input type="checkbox" name="lunch" ${planSettings.lunch ? 'checked' : ''}> Show a lunch slot too</label>
-        <label class="toggle"><input type="checkbox" name="showMoney" ${planSettings.hideMoney ? '' : 'checked'}> Show money saved</label>
-      </div>
-      <p><strong>Saved so far:</strong> <span id="saved-so-far">~${dollars(savingsTotal)}</span> <span class="small muted">(typical restaurant price, estimate)</span></p>
-      <button type="button" class="btn btn--danger btn--small" data-action="reset-savings">${icon('reset')} Reset the savings counter</button>
-    </section>
-
-    <section class="section" aria-labelledby="pantry-title" id="pantry-settings">
-      <h2 id="pantry-title">Pantry staples</h2>
-      <p>Things you always have at home. They're tucked away under <em>“You probably have these”</em> on your shopping list.</p>
-      <div class="pantry-grid">
-        ${PANTRY_OPTIONS.map((o) => `<label class="toggle"><input type="checkbox" name="pantry" value="${o.id}" ${pantry.ids.includes(o.id) ? 'checked' : ''}> ${esc(o.label)}</label>`).join('')}
-      </div>
-      ${pantry.custom.length ? `<ul class="pantry-custom">${pantry.custom.map((c, i) => `<li><span>${esc(c)}</span><button type="button" class="icon-btn" data-remove-pantry="${i}" aria-label="Remove ${esc(c)}">${icon('close')}</button></li>`).join('')}</ul>` : ''}
-      <form class="add-row" id="pantry-form">
-        <label for="pantry-new" class="visually-hidden">Add your own staple</label>
-        <input type="text" id="pantry-new" placeholder="Add your own (e.g. honey)" autocomplete="off" enterkeyhint="done">
-        <button type="submit" class="btn btn--secondary">${icon('plus')}<span>Add</span></button>
-      </form>
-    </section>
-
     <section class="section" aria-labelledby="install-help-title" id="install-help">
       <h2 id="install-help-title">Install on your phone</h2>
       ${install.isStandalone() ? '<p><strong>Good news: Sal’s Kitchen is already installed on this device.</strong></p>' : '<p>Once installed, Sal’s Kitchen opens from its own icon and works with no internet.</p>'}
@@ -1820,7 +1065,7 @@ async function renderSettings() {
 
     <section class="section" aria-labelledby="backup-title">
       <h2 id="backup-title">Backup &amp; restore</h2>
-      <p>Your favorites, ticked ingredients, shopping list, week plans, pantry staples and savings are saved only on this device. A backup file holds all of them, so you can keep a copy safe or move to a new phone.</p>
+      <p>Your favorites, ticked ingredients and shopping list are saved only on this device. A backup file holds all of them, so you can keep a copy safe or move to a new phone.</p>
       <p><strong>Last backup:</strong> <span id="last-backup">${lastBackup ? esc(formatDate(lastBackup)) : 'never'}</span></p>
       <div class="stack">
         <button type="button" class="btn btn--block" data-action="backup">${icon('download')} ${onPhone() ? 'Save a backup file' : 'Download a backup file'}</button>
@@ -1879,60 +1124,11 @@ async function renderSettings() {
     if (action === 'backup') return makeBackup(false);
     if (action === 'backup-download') return makeBackup(true);
     if (action === 'install-now') return install.promptInstall();
-    if (action === 'reset-savings') {
-      if (!confirm('Reset the savings counter to $0? Your week plans stay as they are.')) return;
-      await db.clearSavings();
-      savingsTotal = 0;
-      main.querySelector('#saved-so-far').textContent = dollars(0);
-      toast('Savings counter reset. Back to zero — let’s cook.');
-      return;
-    }
-  };
-  const onRemovePantry = async (e) => {
-    const b = e.target.closest('[data-remove-pantry]');
-    if (!b) return;
-    pantry.custom = pantry.custom.filter((_, i) => i !== Number(b.dataset.removePantry));
-    await savePantry();
-    refresh();
-  };
-  const onPantrySubmit = async (e) => {
-    if (e.target.id !== 'pantry-form') return;
-    e.preventDefault();
-    const input = main.querySelector('#pantry-new');
-    const text = input.value.trim();
-    if (!text) return input.focus();
-    if (!pantry.custom.some((c) => c.toLowerCase() === text.toLowerCase())) pantry.custom.push(text);
-    await savePantry();
-    toast(`“${text}” added to your pantry staples.`);
-    refresh().then(() => { const i = main.querySelector('#pantry-new'); if (i) i.focus(); });
   };
 
   const onChange = async (e) => {
     if (e.target.name === 'theme') {
       setTheme(e.target.value);
-      return;
-    }
-    if (e.target.name === 'weekStart') {
-      planSettings.weekStart = e.target.value === 'sun' ? 'sun' : 'mon';
-      planner.start = null;
-      await savePlanSettings();
-      toast(`Weeks now start on ${planSettings.weekStart === 'sun' ? 'Sunday' : 'Monday'}.`);
-      return;
-    }
-    if (e.target.name === 'lunch') {
-      planSettings.lunch = e.target.checked;
-      await savePlanSettings();
-      return;
-    }
-    if (e.target.name === 'showMoney') {
-      planSettings.hideMoney = !e.target.checked;
-      await savePlanSettings();
-      return;
-    }
-    if (e.target.name === 'pantry') {
-      const id = e.target.value;
-      pantry.ids = e.target.checked ? [...new Set([...pantry.ids, id])] : pantry.ids.filter((x) => x !== id);
-      await savePantry();
       return;
     }
     if (e.target.id === 'restore-file') {
@@ -1948,17 +1144,13 @@ async function renderSettings() {
         }
         db.validateBackup(data);
         const when = data.exportedAt ? ` made on ${formatDate(data.exportedAt)}` : '';
-        const favCount = (data.favorites || []).length;
-        const v2 = data.format >= 2;
-        const msg = `Restore the backup${when}?\n\nIt has ${favCount} favorite${favCount === 1 ? '' : 's'} and your shopping list${v2 ? ', week plans, pantry staples and savings' : ''}. It replaces ${v2 ? 'all of those' : 'the favorites, ticks and shopping list'} on this device.`;
+        const msg = `Restore the backup${when}?\n\nIt has ${data.favorites.length} favorite${data.favorites.length === 1 ? '' : 's'} and your shopping list. It replaces the favorites, ticks and shopping list on this device.`;
         if (!confirm(msg)) return;
         await db.importAll(data);
         favorites = new Set(data.favorites || []);
         shopping = data.shopping || db.emptyShopping();
-        await loadPlannerState();
         updateListBadge();
         toast('Backup restored.');
-        refresh();
       } catch (err) {
         console.error(err);
         alert(err.message || "Sorry, that backup couldn't be restored.");
@@ -1967,14 +1159,10 @@ async function renderSettings() {
   };
 
   main.addEventListener('click', onClick);
-  main.addEventListener('click', onRemovePantry);
   main.addEventListener('change', onChange);
-  main.addEventListener('submit', onPantrySubmit);
   view.cleanup.push(() => {
     main.removeEventListener('click', onClick);
-    main.removeEventListener('click', onRemovePantry);
     main.removeEventListener('change', onChange);
-    main.removeEventListener('submit', onPantrySubmit);
   });
   afterRender('.page-title');
 }
@@ -1982,22 +1170,6 @@ async function renderSettings() {
 // ====================================================================
 //  Start
 // ====================================================================
-
-async function loadPlannerState() {
-  const [ps, pan] = await Promise.all([db.getMeta('planSettings'), db.getMeta('pantry'), loadSavingsTotal()]);
-  planSettings = { weekStart: 'mon', lunch: false, hideMoney: false, combined: false, ...(ps && typeof ps === 'object' ? ps : {}) };
-  pantry = {
-    ids: pan && Array.isArray(pan.ids) ? pan.ids : [],
-    custom: pan && Array.isArray(pan.custom) ? pan.custom.filter((c) => typeof c === 'string') : [],
-  };
-  planWeeks.clear();
-  planner.start = null;
-}
-
-// An older copy of the app is open in another tab and holds the database.
-document.addEventListener('sal-db-blocked', () => {
-  main.innerHTML = `<div class="card"><h1>One moment</h1><p>Sal's Kitchen just got an update. Please close any other tabs or windows with Sal's Kitchen open — this page continues by itself.</p></div>`;
-});
 
 async function start() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
@@ -2008,9 +1180,7 @@ async function start() {
     unlocked = !!u;
     favorites = new Set(Array.isArray(f) ? f : []);
     if (s && Array.isArray(s.groups) && Array.isArray(s.custom)) shopping = s;
-    await loadPlannerState();
   } catch (e) {
-    console.error(e);
     main.innerHTML = `<div class="card"><h1>Storage is turned off</h1><p>Sal's Kitchen saves your favorites and lists on this device, but your browser is blocking storage. If you are in a Private Browsing window, please open the app in a normal window.</p></div>`;
     return;
   }
