@@ -1,7 +1,7 @@
 // Service worker: keeps a copy of the app on the device so it works offline.
 // When you change files, the app picks them up automatically on the next visit or two.
 // Changing VERSION forces every device to download a fresh copy of everything.
-const VERSION = '1';
+const VERSION = '2';
 const CACHE = 'sals-kitchen-v' + VERSION;
 
 const FILES = [
@@ -11,14 +11,20 @@ const FILES = [
   './config.js',
   './manifest.webmanifest',
   './data/recipes.js',
+  './data/costs.js',
+  './data/restaurant-prices.js',
   './js/app.js',
   './js/db.js',
   './js/icons.js',
   './js/install.js',
+  './js/merge.js',
+  './js/money.js',
+  './js/plan.js',
   './js/scale.js',
   './js/sha256.js',
   './js/timers.js',
   './js/util.js',
+  './js/weeks.js',
   './assets/sal-avatar.png',
   './assets/icons/icon-192.png',
   './assets/icons/icon-512.png',
