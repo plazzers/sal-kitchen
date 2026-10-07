@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Planner self-tests — Sal's Kitchen</title>
+<style>
+  :root { color-scheme: light dark; --bg: #f8f2e7; --ink: #2a1d17; --card: #fffcf6; --line: #e2d5c1; --ok: #3f6a2a; --bad: #a12620; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #16110e; --ink: #f3eadc; --card: #211914; --line: #3f3229; --ok: #a9d48a; --bad: #ff9a90; } }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 820px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.5rem; margin: 0 0 6px; }
+  #summary { font-weight: 700; font-size: 1.15rem; padding: 12px 16px; border-radius: 10px; background: var(--card); border: 1px solid var(--line); }
+  ul { list-style: none; padding: 0; }
+  li { padding: 6px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+  .ok::before { content: "✓ "; color: var(--ok); font-weight: 800; }
+  .bad { color: var(--bad); }
+  .bad::before { content: "✗ "; font-weight: 800; }
+  h2 { font-size: 1.1rem; margin: 22px 0 4px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Planner self-tests</h1>
+  <p>Checks the week planner, the combined shopping list and the money numbers. It uses its own test storage and never touches your saved recipes or plans.</p>
+  <p id="summary" role="status">Running…</p>
+  <div id="out"></div>
+</main>
+<script src="../js/sha256.js"></script>
+<script type="module">
+import { RECIPES } from '../data/recipes.js';
+import { COST_PER_SERVING } from '../data/costs.js';
+import { mergeTexts, parseSimple, isPantryLine, pantryNames } from '../js/merge.js';
+import { parseCostText, homeCost, restaurantPrice, baseServings, mealMoney } from '../js/money.js';
+import { surprisePicks, canAutoPick, DESSERTS, SAUCES_CHAPTER, MAX_PER_CHAPTER } from '../js/plan.js';
+import * as weeks from '../js/weeks.js';
+import * as db from '../js/db.js';
+
+const results = [];
+let section = '';
+const out = document.getElementById('out');
+function group(name) {
+  section = name;
+  const h = document.createElement('h2');
+  h.textContent = name;
+  out.appendChild(h);
+  const ul = document.createElement('ul');
+  out.appendChild(ul);
+}
+function check(name, ok, detail = '') {
+  results.push({ section, name, ok: !!ok, detail });
+  const li = document.createElement('li');
+  li.className = ok ? 'ok' : 'bad';
+  li.textContent = name + (ok || !detail ? '' : ` — ${detail}`);
+  out.lastElementChild.appendChild(li);
+}
+const eq = (name, got, want) => check(name, JSON.stringify(got) === JSON.stringify(want), `got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`);
+
+// ---------- 1. Ingredient merge rules ----------
+group('Combined shopping list: merge rules');
+eq('cloves + cloves', mergeTexts(['2 cloves garlic', '3 cloves garlic']), ['5 cloves garlic']);
+eq('cloves with different prep notes', mergeTexts(['2 cloves garlic, finely grated', '3 cloves garlic, minced']), ['5 cloves garlic']);
+eq('cups + cups', mergeTexts(['1 cup heavy cream', '1 1/2 cups heavy cream']), ['2 1/2 cups heavy cream']);
+eq('tbsp + tsp converts', mergeTexts(['2 tbsp sugar', '1 tsp sugar']), ['2 tbsp + 1 tsp sugar']);
+eq('tsp + tsp → tbsp', mergeTexts(['1 1/2 tsp cumin', '1 1/2 tsp cumin']), ['1 tbsp cumin']);
+eq('tbsp + cup converts', mergeTexts(['2 tbsp sugar', '1/2 cup sugar']), ['1/2 cup + 2 tbsp sugar']);
+eq('tbsp adding up to a cup', mergeTexts(['8 tbsp butter', '1/2 cup butter']), ['1 cup butter']);
+eq('lb + oz converts', mergeTexts(['1 lb ground beef', '8 oz ground beef']), ['1 1/2 lb ground beef']);
+eq('counted things, singular + singular', mergeTexts(['1 egg', '1 egg']), ['2 eggs']);
+eq('counted things, plural + plural', mergeTexts(['2 eggs', '3 eggs, beaten']), ['5 eggs']);
+eq('counted things with a fraction', mergeTexts(['1 onion, diced', '1/2 onion, sliced']), ['1 1/2 onions']);
+eq('refuses cups + pounds', mergeTexts(['1 cup flour', '1 lb flour']), ['1 cup flour', '1 lb flour']);
+eq('refuses different ingredients', mergeTexts(['1 cup milk', '1 cup whole milk']), ['1 cup milk', '1 cup whole milk']);
+eq('refuses a second ingredient hiding after the comma', mergeTexts(['2 cups beef broth, salt and pepper', '1 cup beef broth']), ['2 cups beef broth, salt and pepper', '1 cup beef broth']);
+eq('refuses lines with two items', mergeTexts(['2 cloves garlic, minced, pinch of red pepper flakes', '2 cloves garlic']), ['2 cloves garlic, minced, pinch of red pepper flakes', '2 cloves garlic']);
+eq('refuses ranges', mergeTexts(['2-3 cloves garlic', '2 cloves garlic']), ['2-3 cloves garlic', '2 cloves garlic']);
+eq('refuses labels', mergeTexts(['Sauce: 2 tbsp soy sauce', '2 tbsp soy sauce']), ['Sauce: 2 tbsp soy sauce', '2 tbsp soy sauce']);
+eq('refuses "+" lines', mergeTexts(['4 tbsp butter + 2 tbsp olive oil', '4 tbsp butter']), ['4 tbsp butter + 2 tbsp olive oil', '4 tbsp butter']);
+eq('refuses brackets', mergeTexts(['2 1/4 tsp (1 packet) yeast', '2 1/4 tsp yeast']), ['2 1/4 tsp (1 packet) yeast', '2 1/4 tsp yeast']);
+eq('refuses cans with a size', mergeTexts(['28 oz can whole tomatoes', '28 oz can whole tomatoes']), ['28 oz can whole tomatoes', '28 oz can whole tomatoes']);
+eq('refuses lines with no amount', mergeTexts(['Salt and pepper', 'Salt and pepper']), ['Salt and pepper', 'Salt and pepper']);
+eq('keeps first-seen order', mergeTexts(['1 cup rice', '2 cloves garlic', '1 cup rice']), ['2 cups rice', '2 cloves garlic']);
+check('every recipe line is either simple or left alone without errors', RECIPES.every((r) => r.ingredients.every((l) => { parseSimple(l); return true; })));
+
+group('Pantry staples');
+const names = pantryNames(['salt', 'pepper', 'butter', 'oil', 'flour'], ['honey']);
+check('"2 tsp salt" is a staple', isPantryLine('2 tsp salt', names));
+check('"Kosher salt and black pepper" is a staple', isPantryLine('Kosher salt and black pepper', names));
+check('"1/2 cup cold butter, cubed" is a staple', isPantryLine('1/2 cup cold butter, cubed', names));
+check('"Oil for frying" is a staple', isPantryLine('Oil for frying', names));
+check('custom staple "honey" works', isPantryLine('1/4 cup honey', names));
+check('"1 red bell pepper" is NOT a staple', !isPantryLine('1 red bell pepper', names));
+check('"Salt, black pepper, pinch of nutmeg" is NOT (nutmeg)', !isPantryLine('Salt, black pepper, pinch of nutmeg', names));
+check('"4 tbsp butter + 2 tbsp olive oil" is NOT (olive oil not chosen)', !isPantryLine('4 tbsp butter + 2 tbsp olive oil', names));
+check('nothing hidden when no staples are chosen', !isPantryLine('2 tsp salt', pantryNames([], [])));
+
+// ---------- 2. Costs ----------
+group('Money: cost parsing for all 33 recipes');
+eq('33 recipes', RECIPES.length, 33);
+eq('"about $2.50 per plate"', parseCostText('about $2.50 per plate'), 2.5);
+eq('"about $7 per steak (sirloin)"', parseCostText('about $7 per steak (sirloin)'), 7);
+eq('"about $0.25 each" is not per serving', parseCostText('about $0.25 each'), null);
+eq('"about $2 for the whole batch" is not per serving', parseCostText('about $2 for the whole batch'), null);
+for (const r of RECIPES) {
+  const parsed = parseCostText(r.cost);
+  const manual = COST_PER_SERVING[r.num];
+  const h = homeCost(r);
+  const p = restaurantPrice(r);
+  const sv = baseServings(r);
+  check(`Nº ${r.num} ${r.title}: home ~$${h} (${manual != null ? 'data/costs.js' : `parsed from “${r.cost}”`}), restaurant ~$${p}, ${sv} servings`,
+    typeof h === 'number' && h > 0 && typeof p === 'number' && p > 0 && sv > 0 && p >= h && (manual != null || parsed != null),
+    `home=${h} restaurant=${p} servings=${sv}`);
+}
+const mm = mealMoney(RECIPES.find((r) => r.num === 5), 2);
+eq('Chicken Parmigiana ×2 money', mm, { servings: 8, home: 24, restaurant: 144, saved: 120 });
+
+// ---------- 3. Surprise me ----------
+group('Surprise me: 200 random runs');
+let seed = 12345;
+const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+let problems = [];
+for (let run = 0; run < 200; run++) {
+  // Random week: some dinners already planned by hand (anything, even desserts).
+  const preset = [];
+  const nPreset = Math.floor(rand() * 4);
+  while (preset.length < nPreset) {
+    const r = RECIPES[Math.floor(rand() * RECIPES.length)];
+    if (!preset.includes(r.num)) preset.push(r.num);
+  }
+  const empty = 7 - preset.length;
+  const picks = surprisePicks(empty, preset, RECIPES, rand);
+  const all = [...preset, ...picks.map((r) => r.num)];
+  if (new Set(all).size !== all.length) problems.push(`run ${run}: repeat`);
+  if (picks.length !== empty) problems.push(`run ${run}: filled ${picks.length} of ${empty}`);
+  for (const r of picks) {
+    if (DESSERTS.has(r.num)) problems.push(`run ${run}: dessert ${r.title}`);
+    if (r.chapter === SAUCES_CHAPTER) problems.push(`run ${run}: sauce ${r.title}`);
+    if (!canAutoPick(r)) problems.push(`run ${run}: not a dinner ${r.title}`);
+  }
+  const perChapter = {};
+  all.forEach((n) => { const c = RECIPES.find((r) => r.num === n).chapter; perChapter[c] = (perChapter[c] || 0) + 1; });
+  const presetPer = {};
+  preset.forEach((n) => { const c = RECIPES.find((r) => r.num === n).chapter; presetPer[c] = (presetPer[c] || 0) + 1; });
+  for (const c of Object.keys(perChapter)) {
+    if (perChapter[c] > Math.max(MAX_PER_CHAPTER, presetPer[c] || 0)) problems.push(`run ${run}: ${perChapter[c]} from chapter ${c}`);
+  }
+}
+check('no repeats, max 2 per chapter, no desserts or sauces, every empty dinner filled', !problems.length, problems.slice(0, 5).join('; '));
+const full = surprisePicks(7, [], RECIPES, rand);
+check('empty week gets 7 dinners', full.length === 7, `got ${full.length}`);
+check('nothing to pick when everything is used', surprisePicks(3, RECIPES.map((r) => r.num), RECIPES, rand).length === 0);
+
+// ---------- 4. ISO weeks ----------
+group('ISO week math');
+eq('2026-10-07 (Wed)', weeks.isoWeekKey('2026-10-07'), '2026-W41');
+eq('2026-01-01 (Thu) is week 1', weeks.isoWeekKey('2026-01-01'), '2026-W01');
+eq('2026-12-31 (Thu)', weeks.isoWeekKey('2026-12-31'), '2026-W53');
+eq('2027-01-01 (Fri) still belongs to 2026', weeks.isoWeekKey('2027-01-01'), '2026-W53');
+eq('2027-01-03 (Sun) still belongs to 2026', weeks.isoWeekKey('2027-01-03'), '2026-W53');
+eq('2027-01-04 (Mon) starts 2027', weeks.isoWeekKey('2027-01-04'), '2027-W01');
+eq('2024-12-30 (Mon) belongs to 2025', weeks.isoWeekKey('2024-12-30'), '2025-W01');
+eq('2021-01-03 (Sun) belongs to 2020', weeks.isoWeekKey('2021-01-03'), '2020-W53');
+eq('Monday start across new year', weeks.startOfWeek('2027-01-01', 'mon'), '2026-12-28');
+eq('Sunday start across new year', weeks.startOfWeek('2027-01-01', 'sun'), '2026-12-27');
+eq('a Sunday with Sunday start', weeks.startOfWeek('2026-10-11', 'sun'), '2026-10-11');
+eq('a Sunday with Monday start', weeks.startOfWeek('2026-10-11', 'mon'), '2026-10-05');
+eq('7 days across a year', weeks.weekDays('2026-12-28'), ['2026-12-28', '2026-12-29', '2026-12-30', '2026-12-31', '2027-01-01', '2027-01-02', '2027-01-03']);
+eq('adding days across a DST change', weeks.addDays('2026-11-01', 1), '2026-11-02');
+eq('adding days in spring', weeks.addDays('2026-03-08', 1), '2026-03-09');
+
+// ---------- 5. Storage: upgrade + backup ----------
+group('Storage: upgrade from v1 and backup round-trip');
+const deleteDb = (name) => new Promise((res) => { const r = indexedDB.deleteDatabase(name); r.onsuccess = r.onerror = r.onblocked = () => res(); });
+try {
+  // A database exactly as the v1 app left it.
+  const UP = 'sals-kitchen-selftest-upgrade';
+  await db.closeDB();
+  await deleteDb(UP);
+  await new Promise((resolve, reject) => {
+    const req = indexedDB.open(UP, 1);
+    req.onupgradeneeded = () => {
+      req.result.createObjectStore('meta');
+      req.result.createObjectStore('progress', { keyPath: 'num' });
+    };
+    req.onsuccess = () => {
+      const d = req.result;
+      const t = d.transaction(['meta', 'progress'], 'readwrite');
+      t.objectStore('meta').put({ at: '2026-01-01T00:00:00Z' }, 'unlocked');
+      t.objectStore('meta').put([2, 5], 'favorites');
+      t.objectStore('meta').put({ groups: [{ id: 'g1', recipeNum: 2, title: 'Real Fettuccine Alfredo', factor: 1, items: [{ text: '1 lb fettuccine', checked: true }] }], custom: [] }, 'shopping');
+      t.objectStore('progress').put({ num: 5, ticks: [0, 2], done: [1], factor: 2 });
+      t.oncomplete = () => { d.close(); resolve(); };
+      t.onerror = () => reject(t.error);
+    };
+    req.onerror = () => reject(req.error);
+  });
+  db.useDatabase(UP);
+  eq('v1 unlock survives the upgrade', !!(await db.getMeta('unlocked')), true);
+  eq('v1 favorites survive', await db.getMeta('favorites'), [2, 5]);
+  eq('v1 shopping list survives', (await db.getMeta('shopping')).groups[0].items[0], { text: '1 lb fettuccine', checked: true });
+  eq('v1 ticks survive', await db.getProgress(5), { num: 5, ticks: [0, 2], done: [1], factor: 2 });
+  eq('new plans store is there and empty', await db.listPlans(), []);
+  eq('new savings store is there and empty', await db.listSavings(), []);
+  await db.closeDB();
+  await deleteDb(UP);
+
+  // Backup round-trip with everything filled in.
+  const T = 'sals-kitchen-selftest';
+  await deleteDb(T);
+  db.useDatabase(T);
+  await db.setMeta('favorites', [1, 9]);
+  await db.setMeta('shopping', { groups: [], custom: [{ id: 'c1', text: 'paper towels', checked: false }] });
+  await db.putProgress({ num: 9, ticks: [1], done: [], factor: 1 });
+  await db.putPlanWeek({ week: '2026-W41', days: { '2026-10-05': { dinner: { num: 5, factor: 2 } }, '2026-10-06': { dinner: { num: 5, factor: 1, leftover: { date: '2026-10-05', meal: 'dinner' } } } } });
+  await db.putSaving({ id: 's1', date: '2026-10-05', meal: 'dinner', num: 5, factor: 2, servings: 8, home: 24, restaurant: 144, saved: 120, at: '2026-10-05T20:00:00Z' });
+  await db.setMeta('pantry', { ids: ['salt'], custom: ['honey'] });
+  await db.setMeta('planSettings', { weekStart: 'sun', lunch: true, hideMoney: false, combined: true });
+  const backup = JSON.parse(JSON.stringify(await db.exportAll()));
+  eq('backup format is 2', backup.format, 2);
+  check('backup holds plans, savings, pantry and settings', backup.plans.length === 1 && backup.savings.length === 1 && backup.pantry.custom[0] === 'honey' && backup.planSettings.weekStart === 'sun');
+
+  // Wipe, then restore.
+  await db.putPlanWeek({ week: '2026-W42', days: {} });
+  await db.clearSavings();
+  await db.setMeta('pantry', { ids: [], custom: [] });
+  await db.setMeta('favorites', []);
+  await db.importAll(db.validateBackup(backup));
+  eq('restored favorites', await db.getMeta('favorites'), [1, 9]);
+  eq('restored plans (extra week removed)', (await db.listPlans()).map((w) => w.week), ['2026-W41']);
+  eq('restored leftover slot', (await db.getPlanWeek('2026-W41')).days['2026-10-06'].dinner.leftover, { date: '2026-10-05', meal: 'dinner' });
+  eq('restored savings', (await db.listSavings()).map((x) => x.saved), [120]);
+  eq('restored pantry', await db.getMeta('pantry'), { ids: ['salt'], custom: ['honey'] });
+  eq('restored planner settings', (await db.getMeta('planSettings')).lunch, true);
+
+  // An old (format 1) backup still restores, and leaves planner data alone.
+  const old = { app: 'sals-kitchen', format: 1, exportedAt: '2026-09-01T10:00:00.000Z', favorites: [3], shopping: { groups: [], custom: [] }, progress: [{ num: 3, ticks: [0], done: [], factor: 1 }] };
+  await db.importAll(db.validateBackup(old));
+  eq('old backup: favorites restored', await db.getMeta('favorites'), [3]);
+  eq('old backup: ticks restored', (await db.getProgress(3)).ticks, [0]);
+  eq('old backup: plans left alone', (await db.listPlans()).length, 1);
+  eq('old backup: savings left alone', (await db.listSavings()).length, 1);
+
+  let threw = '';
+  try { db.validateBackup({ app: 'sals-kitchen', format: 99, favorites: [], shopping: { groups: [], custom: [] }, progress: [] }); } catch (e) { threw = e.message; }
+  check('a backup from a newer app is refused politely', /newer version/.test(threw), threw);
+  threw = '';
+  try { db.validateBackup({ app: 'sals-kitchen', format: 2, favorites: [], shopping: { groups: [], custom: [] }, progress: [], plans: [{ nope: 1 }] }); } catch (e) { threw = e.message; }
+  check('a damaged v2 backup is refused', /damaged/.test(threw), threw);
+  threw = '';
+  try { db.validateBackup({ hello: 1 }); } catch (e) { threw = e.message; }
+  check('a random file is refused', /isn't a Sal's Kitchen backup/.test(threw), threw);
+
+  await db.closeDB();
+  await deleteDb(T);
+} catch (e) {
+  check('storage tests ran', false, e && (e.stack || e.message || String(e)));
+}
+
+const failed = results.filter((r) => !r.ok);
+document.getElementById('summary').textContent = failed.length ? `${failed.length} of ${results.length} checks FAILED` : `All ${results.length} checks passed.`;
+document.getElementById('summary').style.color = failed.length ? 'var(--bad)' : 'var(--ok)';
+window.__testResults = { total: results.length, failed, results };
+</script>
+</body>
+</html>

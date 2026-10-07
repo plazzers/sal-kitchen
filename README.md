@@ -2,6 +2,8 @@
 
 A phone-friendly recipe app with Chef Sal's 33 restaurant-style recipes. People can search recipes and filter them by chapter, save favorites, and make more or less of a recipe (the ingredient amounts change automatically). They can tick off ingredients and steps, cook step by step with big text and kitchen timers, and build a shopping list they can share or print.
 
+**New in version 2:** a weekly meal planner (with "Surprise me", leftovers and a shopping list for the whole week) and a "money saved" counter that compares cooking at home with a typical restaurant price.
+
 - Works on iPhone, Android and computers. Can be installed to the Home Screen like a regular app.
 - Works **without internet** after the first visit.
 - No accounts, no tracking, no cookies, no server. Everything people save stays on **their own** device.
@@ -122,6 +124,18 @@ When you write new ingredient lines, start them with the amount (`2 cloves garli
 
 ---
 
+### Costs and restaurant prices (money saved)
+
+The planner shows "This week at home: ~$X. At a restaurant: ~$Y. You keep ~$Z." Here's where those numbers come from:
+
+- **Cost at home** comes from each recipe's `cost` text in `data/recipes.js` when it says *per plate / per serving / per bowl / per steak / per burger / per sandwich / per piece / per cake*. If you change a cost there, the app picks it up.
+- Recipes priced "each", "per pancake" or "for the whole batch" get a hand-written cost per serving in **`data/costs.js`**. That file also says how many servings a batch makes when `serves` isn't a plain number (for example 12 breadsticks = 6 servings).
+- **`data/restaurant-prices.js`** holds a typical restaurant price per serving for every recipe. These are conservative estimates, and the app always labels them "typical restaurant price, estimate". Never put a restaurant's name in this file.
+
+If you add a recipe 34, give it a line in `data/restaurant-prices.js`, and a line in `data/costs.js` if its cost isn't written per serving. The self-test page (section 7) tells you if you forgot.
+
+---
+
 ## 5. Change Sal's picture or the app icons
 
 The round picture in the header, on the welcome screen and in the "Sal says" box is `assets/sal-avatar.png` (256 × 256, round, transparent corners).
@@ -136,7 +150,7 @@ The Home Screen icons are in `assets/icons/`: `icon-192.png`, `icon-512.png`, `m
 
 After you commit a change, GitHub Pages publishes it within a few minutes. The app keeps a saved copy so it works offline. It quietly downloads the new version in the background, and people see it the **next time** they open the app (sometimes the time after that).
 
-To force everyone to get a fresh copy right away, open **`sw.js`**, change `const VERSION = '1';` to `'2'` (then `'3'` next time, and so on) and commit. **If you add a new file to the app** (not just edit one), also add its name to the `FILES` list in `sw.js`.
+To force everyone to get a fresh copy right away, open **`sw.js`**, raise the number in `const VERSION = '2';` by one (`'3'`, then `'4'` next time, and so on) and commit. **If you add a new file to the app** (not just edit one), also add its name to the `FILES` list in `sw.js`.
 
 ---
 
@@ -147,7 +161,10 @@ To force everyone to get a fresh copy right away, open **`sw.js`**, change `cons
 3. Tick a few ingredients, tap the heart, tap **Add to shopping list**.
 4. Tap **Start cooking mode**, go through the steps, start a timer.
 5. Open the **List** (cart icon), tick an item, tap **Share list**.
-6. In **Settings**, make a backup, then restore it.
+6. Open **Plan** (calendar icon). Tap **Surprise me**, then **Make shopping list for this week**. On the list, try **Combined**.
+7. In **Settings**, make a backup, then restore it.
+
+**Self-test page:** open `https://plazzers.github.io/sal-kitchen/tests/planner.html`. It checks the shopping-list merging, the costs for every recipe, the "Surprise me" rules, the week dates and backups, and should say **"All … checks passed."** It uses its own test storage, so it never touches anything saved in the app.
 
 To start over as a brand-new user (see the access-code screen again): in Chrome, open the app, click the icon to the left of the address → **Site settings** → **Delete data**. On iPhone: Settings → Safari → Advanced → Website Data → find `github.io` → Delete.
 
@@ -155,9 +172,25 @@ To start over as a brand-new user (see the access-code screen again): in Chrome,
 
 ---
 
-## 8. Where people's data lives
+## 8. The week planner
 
-Favorites, ticks, the chosen amount for each recipe, and the shopping list are stored in the browser on each person's own device. Nothing is uploaded, not to you and not to GitHub. **Settings → Backup** saves one small file that people can keep and restore later or on a new phone.
+- **Plan** (calendar icon in the header) shows one week, Monday to Sunday. People can switch to Sunday-first and turn on a lunch slot under Settings → Week plan.
+- **+ Add a recipe** opens a searchable recipe picker. From any recipe page, **Add to plan** lets people choose a day. Each meal has its own amount (×½ ×1 ×2 ×3), which uses the same make-more/less logic as the recipe page.
+- On a computer, meals can be dragged to another day. On a phone, they use **Move to…**. Moving onto a day that already has a meal swaps the two.
+- **Leftovers** marks a meal as leftovers from an earlier day. It adds nothing to the shopping list or the money numbers.
+- **Surprise me** fills the empty dinners: no repeats in the week, at most 2 from the same chapter, and only main dishes. It never picks desserts, sides or Sal's Sauces (people can still add those by hand). The list of what it skips is at the top of `js/plan.js`.
+- **Make shopping list for this week** adds every planned recipe (with its amount) to the shopping list, grouped by recipe as before. **Combined** adds up identical ingredients across recipes when the units match or convert (2 cloves garlic + 3 cloves garlic → 5 cloves garlic; tbsp/tsp/cups; oz/lb). Anything it can't add up safely stays as written.
+- **Pantry staples** (Settings) are things people always have, like salt, butter or oil. On the list they move into a closed **"You probably have these"** box.
+- **We made it** (on today's and past meals), or finishing cooking mode for a recipe planned today, adds that meal's savings to the counter on the Home screen. People can reset the counter, or hide all money numbers, in Settings.
+- **Share this week's menu** sends a plain-text menu, or copies it when the device has no share button.
+
+---
+
+## 9. Where people's data lives
+
+Favorites, ticks, the chosen amount for each recipe, week plans, pantry staples, savings and the shopping list are stored in the browser on each person's own device. Nothing is uploaded, not to you and not to GitHub. **Settings → Backup** saves one small file that people can keep and restore later or on a new phone. Backups made with version 1 (before the planner) still restore. They bring back favorites, ticks and the shopping list, and leave the planner as it is.
+
+Version 2 adds two new storage areas for plans and savings. Everything people saved with version 1 stays exactly as it was. If someone still has the old version open in another browser tab, the new one asks them to close it and then carries on by itself.
 
 On iPhone, Safari may clear website data if the site isn't used for a while. Installing the app to the Home Screen prevents that, and the app explains this to iPhone users.
 
@@ -170,8 +203,11 @@ On iPhone, Safari may clear website data if the site isn't used for a while. Ins
 | `index.html`, `styles.css` | The app's page and its look (colors, sizes, light/dark mode, print layout) |
 | `config.js` | **Your settings:** access codes, links, email |
 | `data/recipes.js` | **The recipes** the app shows |
+| `data/costs.js` | Cost per serving for recipes not priced per serving, and servings per batch |
+| `data/restaurant-prices.js` | Typical restaurant price per serving (estimates) for the money-saved numbers |
 | `recipes.source.json` | Original copy of the recipes from the cookbook (not used by the app) |
-| `js/` | The app's code (`scale.js` = make more/less, `timers.js` = kitchen timers) |
+| `js/` | The app's code (`scale.js` = make more/less, `timers.js` = kitchen timers, `plan.js` = Surprise me rules, `merge.js` = Combined list and pantry staples, `money.js` = money saved, `weeks.js` = dates) |
+| `tests/planner.html` | Self-test page for the planner (open it in a browser) |
 | `assets/` | Sal's picture and the app icons |
 | `tools/make-code-hash.html` | Turns a new access code into a hash for `config.js` |
 | `sw.js`, `manifest.webmanifest` | Make the app installable and work offline |
