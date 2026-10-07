@@ -1,7 +1,7 @@
 // Service worker: keeps a copy of the app on the device so it works offline.
 // When you change files, the app picks them up automatically on the next visit or two.
 // Changing VERSION forces every device to download a fresh copy of everything.
-const VERSION = '2';
+const VERSION = '3';
 const CACHE = 'sals-kitchen-v' + VERSION;
 
 const FILES = [
@@ -10,7 +10,6 @@ const FILES = [
   './styles.css',
   './config.js',
   './manifest.webmanifest',
-  './data/recipes.js',
   './data/costs.js',
   './data/restaurant-prices.js',
   './js/app.js',
@@ -18,7 +17,10 @@ const FILES = [
   './js/icons.js',
   './js/install.js',
   './js/merge.js',
+  './js/migrate.js',
   './js/money.js',
+  './js/packcrypto.js',
+  './js/packs.js',
   './js/plan.js',
   './js/scale.js',
   './js/sha256.js',
@@ -33,11 +35,21 @@ const FILES = [
   './assets/icons/favicon-32.png',
 ];
 
+// The encrypted recipe packs. Saved one by one: a pack that isn't published yet (404)
+// is simply skipped, and the app shows "Recipes are updating" until it's there.
+const PACKS = [
+  './packs/copycat.pack.json',
+  './packs/italian.pack.json',
+];
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches
       .open(CACHE)
-      .then((cache) => cache.addAll(FILES.map((f) => new Request(f, { cache: 'reload' }))))
+      .then((cache) => cache.addAll(FILES.map((f) => new Request(f, { cache: 'reload' })))
+        .then(() => Promise.all(PACKS.map((f) => fetch(new Request(f, { cache: 'reload' }))
+          .then((res) => (res.ok ? cache.put(f, res) : null))
+          .catch(() => null)))))
       .then(() => self.skipWaiting())
   );
 });

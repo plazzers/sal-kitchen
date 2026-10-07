@@ -1,7 +1,8 @@
 import './sha256.js';
 import * as db from './db.js';
-import { APP_NAME, YOUTUBE_URL, STORE_URL, SUPPORT_EMAIL, ACCESS_CODE_HASHES } from '../config.js';
-import { CHAPTERS, RECIPES } from '../data/recipes.js';
+import { APP_NAME, YOUTUBE_URL, STORE_URL, SUPPORT_EMAIL } from '../config.js';
+import * as packs from './packs.js';
+import { toRid } from './migrate.js';
 import { scaleLineParts, scaleLine } from './scale.js';
 import * as timers from './timers.js';
 import { icon } from './icons.js';
@@ -12,7 +13,7 @@ import { surprisePicks } from './plan.js';
 import { mealMoney, dollars } from './money.js';
 import { combineLines, isPantryLine, pantryNames, PANTRY_OPTIONS } from './merge.js';
 
-const APP_VERSION = '2.0';
+const APP_VERSION = '3.0';
 const PLAN_FACTORS = [0.5, 1, 2, 3]; // per-meal amounts in the planner
 const STEPS = [0.5, 1, 1.5, 2, 2.5, 3, 4, 5, 6]; // what − and + move between
 const PRESETS = [0.5, 1, 2, 3];
@@ -28,11 +29,11 @@ const planBtn = document.getElementById('plan-btn') || makePlanButton();
 const toastEl = document.getElementById('toast');
 const tray = document.getElementById('timer-tray');
 
-let unlocked = false;
-let favorites = new Set();
+let unlocked = false; // this device was unlocked at some point (meta 'unlocked')
+let favorites = new Set(); // recipe ids, "copycat:5"
 let shopping = db.emptyShopping();
 let view = { name: null, cleanup: [] };
-const home = { q: '', chip: 'all', scroll: 0 };
+const home = { q: '', chip: 'all', lib: 'all', scroll: 0 }; // lib: 'all' or a pack id
 // Planner settings (meta 'planSettings'), pantry staples (meta 'pantry'), savings total (store 'savings').
 let planSettings = { weekStart: 'mon', lunch: false, hideMoney: false, combined: false };
 let pantry = { ids: [], custom: [] };
@@ -54,8 +55,27 @@ function makePlanButton() {
   return a;
 }
 
-const byNum = new Map(RECIPES.map((r) => [r.num, r]));
-const chapterByNum = new Map(CHAPTERS.map((c) => [c.num, c]));
+// The recipes and chapters of every pack that's open on this device (see js/packs.js).
+// A recipe's id is "<pack>:<number>" (r.rid); r.num is its number inside its pack.
+let RECIPES = [];
+let CHAPTERS = [];
+let byRid = new Map();
+let chapterByKey = new Map();
+
+function rebuildIndex() {
+  const open = packs.openPacks();
+  RECIPES = open.flatMap((p) => p.recipes);
+  CHAPTERS = open.flatMap((p) => p.chapters);
+  byRid = new Map(RECIPES.map((r) => [r.rid, r]));
+  chapterByKey = new Map(CHAPTERS.map((c) => [c.key, c]));
+  if (home.lib !== 'all' && !packs.catalogEntry(home.lib)) home.lib = 'all';
+}
+
+const ready = () => RECIPES.length > 0;
+const chapterOf = (r) => chapterByKey.get(`${r.pack}:${r.chapter}`);
+const chapterTitleOf = (r) => (chapterOf(r) || {}).title || '';
+const packLabel = (id) => (packs.catalogEntry(id) || { label: id }).label;
+const multiPack = () => packs.openPacks().length > 1;
 
 // ====================================================================
 //  Helpers
@@ -136,20 +156,20 @@ async function saveShopping() {
   }
 }
 
-async function toggleFavorite(num) {
-  if (favorites.has(num)) favorites.delete(num);
-  else favorites.add(num);
+async function toggleFavorite(rid) {
+  if (favorites.has(rid)) favorites.delete(rid);
+  else favorites.add(rid);
   try {
     await db.setMeta('favorites', [...favorites]);
   } catch (e) {
     console.error(e);
   }
-  return favorites.has(num);
+  return favorites.has(rid);
 }
 
-async function loadProgress(num) {
-  const p = (await db.getProgress(num)) || {};
-  return { num, ticks: p.ticks || [], done: p.done || [], factor: typeof p.factor === 'number' ? p.factor : 1 };
+async function loadProgress(rid) {
+  const p = (await db.getProgress(rid)) || {};
+  return { rid, ticks: p.ticks || [], done: p.done || [], factor: typeof p.factor === 'number' ? p.factor : 1 };
 }
 
 let progressChain = Promise.resolve();
@@ -187,7 +207,7 @@ function startTimerFrom(btn) {
 let trayKey = '';
 function renderTray() {
   const list = timers.list();
-  const show = unlocked && list.length > 0;
+  const show = ready() && list.length > 0;
   tray.hidden = !show;
   document.body.classList.toggle('has-timers', show);
   if (!show) {
@@ -240,14 +260,23 @@ async function route() {
   const parts = (location.hash.replace(/^#\/?/, '') || '').split('/').filter(Boolean).map(decodeURIComponent);
 
   renderTray();
-  if (!unlocked) return renderUnlock();
+  if (!ready()) {
+    // No recipes open on this device yet.
+    if (!packs.anyFileAvailable()) return renderUpdating();
+    if (!unlocked) return renderUnlock();
+    // Unlocked before v3 (or the pack got a new key): ask for the code once more.
+    // The shopping list doesn't need the recipes, so it stays open.
+    if (parts[0] === 'list') return renderList();
+    return renderReentry();
+  }
 
   try {
     if (parts[0] === 'settings') return await renderSettings();
     if (parts[0] === 'list') return renderList();
     if (parts[0] === 'plan') return await renderPlan();
     if ((parts[0] === 'recipe' || parts[0] === 'cook') && parts[1]) {
-      const r = byNum.get(Number(parts[1]));
+      // "#/recipe/copycat:5"; old links "#/recipe/5" mean copycat:5.
+      const r = byRid.get(toRid(parts[1]));
       if (!r) {
         toast('That recipe was not found.');
         location.replace('#/');
@@ -283,6 +312,76 @@ function refresh() {
 //  1. Unlock
 // ====================================================================
 
+const CODE_HELP = `
+      <p>Your access code is printed in the <strong>PDF</strong> you downloaded from Payhip when you bought Sal's Kitchen (or Sal's Italian Kitchen). Open the PDF and look near the front.</p>
+      <p>Can't find the PDF? Look for the email from Payhip that was sent right after your purchase — it has the download link. Check your spam or "Promotions" folder too.</p>
+      <p>You only need to enter the code once on each phone, tablet or computer.</p>
+      <p>Still stuck? Email <a href="mailto:${esc(SUPPORT_EMAIL)}">${esc(SUPPORT_EMAIL)}</a> and we'll help you out.</p>`;
+
+const WRONG_CODE = "That code didn't work. Please check it and try again — dashes count, but upper or lower case doesn't matter.";
+
+// Check a code and open every pack it unlocks. Used by the welcome screen, the one-time
+// re-entry screen, the locked-pack cards and Settings.
+//   form: a <form> with an <input>, a .error and a submit button. onDone(openedIds) runs on success.
+function wireCodeForm(form, { onDone, noneMessage = WRONG_CODE }) {
+  const input = form.querySelector('input');
+  const err = form.querySelector('.error');
+  const btn = form.querySelector('button[type="submit"]');
+  const btnText = btn.innerHTML;
+  const fail = (msg) => {
+    err.textContent = msg;
+    input.setAttribute('aria-invalid', 'true');
+    input.focus();
+  };
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (btn.disabled) return;
+    const code = SalHash.normalizeCode(input.value);
+    err.textContent = '';
+    input.removeAttribute('aria-invalid');
+    if (!code) return fail('Please type your access code.');
+    if (!(await packs.passesPrecheck(code))) return fail(WRONG_CODE);
+    btn.disabled = true;
+    form.setAttribute('aria-busy', 'true');
+    const say = (text) => { btn.innerHTML = `<span class="spinner" aria-hidden="true"></span> ${esc(text)}`; };
+    say('Checking your code…');
+    let opened = [];
+    try {
+      opened = await packs.unlockWithCode(code, { onProgress: (p) => say(`Opening ${p.title}…`) });
+    } catch (ex) {
+      console.error(ex);
+    }
+    btn.disabled = false;
+    form.removeAttribute('aria-busy');
+    btn.innerHTML = btnText;
+    if (!opened.length) {
+      const waiting = packs.CATALOG.some((p) => !packs.isOpen(p.id) && packs.fileStatus(p.id) !== 'ok');
+      return fail(waiting ? 'Your code looks right, but those recipes are still on their way. Please try again in a little while.' : noneMessage);
+    }
+    input.value = '';
+    if (!unlocked) await db.setMeta('unlocked', { at: new Date().toISOString() });
+    unlocked = true;
+    rebuildIndex();
+    requestPersistentStorage();
+    onDone(opened);
+  });
+}
+
+function codeFormHtml(id, buttonText, placeholder = 'For example SAL-XXXX-XXXX') {
+  return `<form class="code-form" novalidate>
+      <label for="${id}">Enter your access code</label>
+      <input type="text" id="${id}" name="code" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false"
+        placeholder="${esc(placeholder)}" aria-describedby="${id}-error">
+      <p id="${id}-error" class="error" role="alert"></p>
+      <button class="btn btn--big" type="submit">${buttonText}</button>
+    </form>`;
+}
+
+const goHome = () => {
+  if (location.hash && location.hash !== '#/') location.hash = '#/';
+  else route();
+};
+
 function renderUnlock() {
   setChrome({ title: 'Enter your access code', nav: false });
   main.innerHTML = `
@@ -291,49 +390,81 @@ function renderUnlock() {
     <p class="eyebrow">Chef Sal Romano</p>
     <h1>Welcome to Sal's Kitchen</h1>
     <p class="lede">Real restaurant food, made right in your own kitchen. Enter your code and let's cook.</p>
-    <form id="unlock-form" novalidate>
-      <label for="code">Enter your access code</label>
-      <input type="text" id="code" name="code" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false"
-        placeholder="For example SAL-XXXX-XXXX" aria-describedby="code-error">
-      <p id="code-error" class="error" role="alert"></p>
-      <button class="btn btn--big" type="submit">Unlock the recipes</button>
-    </form>
+    ${codeFormHtml('code', 'Unlock the recipes')}
     <details class="help-box card">
       <summary>Where do I find my code?</summary>
-      <p>Your access code is printed in the <strong>PDF</strong> you downloaded from Payhip when you bought Sal's Kitchen. Open the PDF and look near the front.</p>
-      <p>Can't find the PDF? Look for the email from Payhip that was sent right after your purchase — it has the download link. Check your spam or "Promotions" folder too.</p>
-      <p>You only need to enter the code once on each phone, tablet or computer.</p>
-      <p>Still stuck? Email <a href="mailto:${esc(SUPPORT_EMAIL)}">${esc(SUPPORT_EMAIL)}</a> and we'll help you out.</p>
+      ${CODE_HELP}
     </details>
   </section>`;
-
-  const form = main.querySelector('#unlock-form');
-  const input = main.querySelector('#code');
-  const err = main.querySelector('#code-error');
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const code = SalHash.normalizeCode(input.value);
-    if (!code) {
-      err.textContent = 'Please type your access code.';
-      input.focus();
-      return;
-    }
-    const hash = await SalHash.sha256Hex(code);
-    const ok = ACCESS_CODE_HASHES.map((h) => String(h).trim().toLowerCase()).includes(hash);
-    if (!ok) {
-      err.textContent = "That code didn't work. Please check it and try again — dashes count, but upper or lower case doesn't matter.";
-      input.setAttribute('aria-invalid', 'true');
-      input.focus();
-      return;
-    }
-    await db.setMeta('unlocked', { at: new Date().toISOString() });
-    unlocked = true;
-    requestPersistentStorage();
-    toast('Benvenuti! The kitchen is open.');
-    if (location.hash && location.hash !== '#/') location.hash = '#/';
-    else route();
+  wireCodeForm(main.querySelector('.code-form'), {
+    onDone: () => {
+      toast('Benvenuti! The kitchen is open.');
+      goHome();
+    },
   });
   afterRender();
+}
+
+// For people who unlocked the app before v3: the recipes are now locked with the code itself,
+// and we never saved their code. So, once, we ask for it again. Nothing they saved is touched.
+function renderReentry() {
+  setChrome({ title: 'Welcome back', nav: false });
+  main.innerHTML = `
+  <section class="unlock reentry">
+    <img class="unlock__avatar" src="assets/sal-avatar.png" alt="Chef Sal Romano" width="128" height="128">
+    <p class="eyebrow">Chef Sal Romano</p>
+    <h1 tabindex="-1">Welcome back!</h1>
+    <p class="lede">Quick one-time step: enter your access code again to load your recipes (it's in your Payhip PDF).</p>
+    <div class="notice reentry__safe">
+      <p>${icon('check')} Your favorites, ticks, week plans and shopping list are all still here, safe on this device.</p>
+    </div>
+    ${codeFormHtml('code', 'Load my recipes')}
+    <details class="help-box card">
+      <summary>Where do I find my code?</summary>
+      ${CODE_HELP}
+    </details>
+    <details class="help-box card">
+      <summary>Why do I need it again?</summary>
+      <p>Sal's recipes now come in a locked box that only opens with a real code — so they stay for the people who bought the book. This phone already had the old key, but not the new one.</p>
+      <p>After this, the recipes stay unlocked on this device, even with no internet. You won't be asked again.</p>
+    </details>
+    <p class="reentry__list"><a class="btn btn--ghost" href="#/list">${icon('cart')} Open my shopping list</a></p>
+  </section>`;
+  wireCodeForm(main.querySelector('.code-form'), {
+    onDone: () => {
+      toast('Grazie! Your recipes are back — and everything you saved is right where you left it.', 4500);
+      goHome();
+    },
+  });
+  afterRender('h1');
+}
+
+// No pack file could be loaded (a new version is being published, or offline on a first visit).
+// Never a blank screen.
+function renderUpdating() {
+  setChrome({ title: 'Recipes are updating', nav: false });
+  const offline = packs.CATALOG.some((p) => packs.fileStatus(p.id) === 'offline') || navigator.onLine === false;
+  main.innerHTML = `
+  <section class="unlock updating">
+    <img class="unlock__avatar" src="assets/sal-avatar.png" alt="Chef Sal Romano" width="128" height="128">
+    <p class="eyebrow">Chef Sal Romano</p>
+    <h1 tabindex="-1">${offline ? 'No internet right now' : 'Recipes are updating'}</h1>
+    <p class="lede">${offline
+      ? "The recipes aren't saved on this device yet. Connect to the internet, then tap Try again."
+      : 'Please reload in a minute. Sal is putting something new in the kitchen.'}</p>
+    <p><button type="button" class="btn btn--big" data-action="retry">${icon('reset')} Try again</button></p>
+    ${unlocked ? `<div class="notice"><p>${icon('check')} Your favorites, week plans and shopping list are safe on this device.</p></div>
+    <p><a class="btn btn--ghost" href="#/list">${icon('cart')} Open my shopping list</a></p>` : ''}
+    <p class="small muted">Still stuck after a few minutes? Email <a href="mailto:${esc(SUPPORT_EMAIL)}">${esc(SUPPORT_EMAIL)}</a>.</p>
+  </section>`;
+  const btn = main.querySelector('[data-action="retry"]');
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner" aria-hidden="true"></span> Checking…';
+    await loadPacks({ fresh: true });
+    route();
+  });
+  afterRender('h1');
 }
 
 // ====================================================================
@@ -355,9 +486,9 @@ async function installBannerHtml() {
 }
 
 function recipeCard(r) {
-  const fav = favorites.has(r.num);
+  const fav = favorites.has(r.rid);
   return `<li class="rcard">
-    <a class="rcard__link" href="#/recipe/${r.num}">
+    <a class="rcard__link" href="#/recipe/${r.rid}">
       <span class="rcard__num">Nº ${r.num}</span>
       <span class="rcard__title">${esc(r.title)}</span>
       <span class="rcard__sub">${esc(r.subtitle)}</span>
@@ -367,7 +498,7 @@ function recipeCard(r) {
         <span>${icon('tag')}${esc(r.cost)}</span>
       </span>
     </a>
-    <button type="button" class="fav-btn" data-fav="${r.num}" aria-pressed="${fav}" aria-label="Favorite: ${esc(r.title)}">${icon('heart')}</button>
+    <button type="button" class="fav-btn" data-fav="${r.rid}" aria-pressed="${fav}" aria-label="Favorite: ${esc(r.title)}">${icon('heart')}</button>
   </li>`;
 }
 
@@ -377,11 +508,50 @@ function matches(r, words) {
   return words.every((w) => r._hay.includes(w));
 }
 
+// Recipes in the chosen library ('all' or one pack), filtered by search words and chip.
+function filterRecipes({ q, chip, lib }) {
+  const words = fold(q).split(/\s+/).filter(Boolean);
+  let list = RECIPES.filter((r) => (lib === 'all' || r.pack === lib) && matches(r, words));
+  if (chip === 'fav') list = list.filter((r) => favorites.has(r.rid));
+  else if (chip !== 'all') list = list.filter((r) => `${r.pack}:${r.chapter}` === chip);
+  return { list, words };
+}
+
+// The tasteful "locked" card for a pack this device hasn't unlocked.
+function lockedPackHtml(id) {
+  const p = packs.catalogEntry(id);
+  const n = packs.recipeCount(id);
+  return `<section class="locked-pack" aria-labelledby="lp-${id}" data-locked="${id}">
+    <p class="locked-pack__eyebrow">${icon('lock')} ${id === 'italian' ? 'New from Sal' : 'Recipe book'}</p>
+    <h2 id="lp-${id}" class="locked-pack__title">${esc(p.title)}</h2>
+    <p class="locked-pack__pitch"><strong>${esc(p.pitch.replace(/^\d+/, String(n)))}</strong> ${esc(p.codeHint)}</p>
+    <div class="locked-pack__btns">
+      <a class="btn" href="${esc(p.storeUrl)}" target="_blank" rel="noopener">${icon('store')} Get it</a>
+      <button type="button" class="btn btn--secondary" data-action="have-code" data-pack="${id}" aria-expanded="false">${icon('lock')} I have a code</button>
+    </div>
+    <div class="locked-pack__form" hidden>${codeFormHtml(`code-${id}`, 'Unlock', 'Code from your purchase PDF')}</div>
+  </section>`;
+}
+
+const lockedIds = () => packs.CATALOG.map((p) => p.id).filter((id) => !packs.isOpen(id));
+
+function chapterSectionHtml(ch, items, words, sub) {
+  const id = `ch-${ch.key.replace(':', '-')}`;
+  const H = sub ? 'h3' : 'h2';
+  return `<section class="chapter" aria-labelledby="${id}">
+      <header class="chapter__head">
+        <p class="chapter__num">Chapter ${ch.num}</p>
+        <${H} id="${id}" class="chapter__title">${esc(ch.title)}</${H}>
+        ${words.length || !ch.intro ? '' : `<p class="chapter__intro">“${esc(ch.intro)}”</p>`}
+      </header>
+      <ul class="rcard-list">${items.map(recipeCard).join('')}</ul>
+    </section>`;
+}
+
 function resultsHtml() {
-  const words = fold(home.q).split(/\s+/).filter(Boolean);
-  let list = RECIPES.filter((r) => matches(r, words));
-  if (home.chip === 'fav') list = list.filter((r) => favorites.has(r.num));
-  else if (home.chip !== 'all') list = list.filter((r) => r.chapter === Number(home.chip));
+  if (home.lib !== 'all' && !packs.isOpen(home.lib)) return lockedPackHtml(home.lib);
+  const { list, words } = filterRecipes(home);
+  const lockedTail = home.lib === 'all' && !words.length && home.chip === 'all' ? lockedIds().map(lockedPackHtml).join('') : '';
 
   let head = '';
   if (words.length) {
@@ -391,19 +561,35 @@ function resultsHtml() {
     if (home.chip === 'fav' && !words.length) {
       return `<p class="empty">${icon('heart')}<br>No favorites yet.<br>Tap the heart on any recipe and it will wait for you here.</p>`;
     }
-    return `${head}<p class="empty">No recipes match “${esc(home.q.trim())}”${home.chip !== 'all' ? ' here' : ''}.<br>Try a single word, like <em>garlic</em> or <em>chicken</em>${home.chip !== 'all' ? ', or tap <strong>All</strong>' : ''}.</p>`;
+    return `${head}<p class="empty">No recipes match “${esc(home.q.trim())}”${home.chip !== 'all' ? ' here' : ''}.<br>Try a single word, like <em>garlic</em> or <em>chicken</em>${home.chip !== 'all' ? ', or tap <strong>All recipes</strong>' : ''}.</p>${lockedTail}`;
   }
 
-  const groups = CHAPTERS.map((ch) => ({ ch, items: list.filter((r) => r.chapter === ch.num) })).filter((g) => g.items.length);
-  return head + groups.map(({ ch, items }) => `
-    <section class="chapter" aria-labelledby="ch-${ch.num}">
-      <header class="chapter__head">
-        <p class="chapter__num">Chapter ${ch.num}</p>
-        <h2 id="ch-${ch.num}" class="chapter__title">${esc(ch.title)}</h2>
-        ${words.length ? '' : `<p class="chapter__intro">“${esc(ch.intro)}”</p>`}
-      </header>
-      <ul class="rcard-list">${items.map(recipeCard).join('')}</ul>
-    </section>`).join('');
+  // With more than one pack on screen, each pack gets its own heading.
+  const shown = packs.openPacks().filter((p) => home.lib === 'all' || p.id === home.lib);
+  const withHeads = shown.length > 1 && shown.filter((p) => list.some((r) => r.pack === p.id)).length > 1;
+  return head + shown.map((p) => {
+    const groups = p.chapters.map((ch) => ({ ch, items: list.filter((r) => r.pack === p.id && r.chapter === ch.num) })).filter((g) => g.items.length);
+    if (!groups.length) return '';
+    const body = groups.map(({ ch, items }) => chapterSectionHtml(ch, items, words, withHeads)).join('');
+    return withHeads ? `<section class="pack-group" aria-labelledby="pg-${p.id}"><h2 id="pg-${p.id}" class="pack-group__title">${esc(p.title)}</h2>${body}</section>` : body;
+  }).join('') + lockedTail;
+}
+
+function libSwitchHtml() {
+  const tabs = [...packs.CATALOG.map((p) => [p.id, `${packs.isOpen(p.id) ? '' : icon('lock')}${esc(p.label)} (${packs.recipeCount(p.id)})`]), ['all', 'All']];
+  return `<div class="seg seg--lib" role="group" aria-label="Recipe books">
+    ${tabs.map(([k, label]) => `<button type="button" class="seg__btn" data-lib="${k}" aria-pressed="${home.lib === k}">${label}</button>`).join('')}
+  </div>`;
+}
+
+function chipsHtml() {
+  const chapters = CHAPTERS.filter((c) => home.lib === 'all' || c.pack === home.lib);
+  const chips = [
+    ['all', 'All recipes'],
+    ['fav', `${icon('heart')} Favorites`],
+    ...chapters.map((c) => [c.key, esc(chipLabel(c))]),
+  ];
+  return chips.map(([k, label]) => `<button type="button" class="chip" data-chip="${k}" aria-pressed="${home.chip === k}">${label}</button>`).join('');
 }
 
 const SAVINGS_LINES = [
@@ -431,11 +617,7 @@ function savingsHtml() {
 async function renderHome() {
   setChrome({ title: '' });
   const restoreScroll = home.scroll;
-  const chips = [
-    ['all', 'All recipes'],
-    ['fav', `${icon('heart')} Favorites`],
-    ...CHAPTERS.map((c) => [String(c.num), esc(chipLabel(c))]),
-  ];
+  if (home.chip !== 'all' && home.chip !== 'fav' && !chapterByKey.has(home.chip)) home.chip = 'all';
   main.innerHTML = `
     <section class="hello" aria-label="A word from Sal">
       <img class="hello__avatar" src="assets/sal-avatar.png" alt="" width="76" height="76">
@@ -447,15 +629,14 @@ async function renderHome() {
     ${savingsHtml()}
     <div id="install-slot">${await installBannerHtml()}</div>
     <div class="finder">
+      ${libSwitchHtml()}
       <label for="q" class="visually-hidden">Search recipes or ingredients</label>
       <div class="search">
         ${icon('search')}
         <input type="search" id="q" placeholder="Search recipes or ingredients" autocomplete="off" enterkeyhint="search" value="${esc(home.q)}">
         <button type="button" class="search__clear" data-action="clear-search" aria-label="Clear search" ${home.q ? '' : 'hidden'}>${icon('close')}</button>
       </div>
-      <div class="chips" role="group" aria-label="Show recipes from">
-        ${chips.map(([k, label]) => `<button type="button" class="chip" data-chip="${k}" aria-pressed="${home.chip === k}">${label}</button>`).join('')}
-      </div>
+      <div class="chips" role="group" aria-label="Show recipes from" id="chips">${chipsHtml()}</div>
     </div>
     <div id="results">${resultsHtml()}</div>
     <p class="section footnote">${esc(NOT_AFFILIATED)}</p>
@@ -474,9 +655,45 @@ async function renderHome() {
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); });
 
   const onClick = async (e) => {
+    const lib = e.target.closest('[data-lib]');
+    if (lib) {
+      if (home.lib === lib.dataset.lib) return;
+      home.lib = lib.dataset.lib;
+      home.chip = 'all';
+      main.querySelectorAll('[data-lib]').forEach((b) => b.setAttribute('aria-pressed', String(b === lib)));
+      main.querySelector('#chips').innerHTML = chipsHtml();
+      redraw();
+      return;
+    }
+    const have = e.target.closest('[data-action="have-code"]');
+    if (have) {
+      const card = have.closest('.locked-pack');
+      const box = card.querySelector('.locked-pack__form');
+      box.hidden = !box.hidden;
+      have.setAttribute('aria-expanded', String(!box.hidden));
+      if (!box.hidden) {
+        const form = box.querySelector('form');
+        if (!form.dataset.wired) {
+          form.dataset.wired = '1';
+          const id = card.dataset.locked;
+          wireCodeForm(form, {
+            noneMessage: `That code doesn't open ${packs.catalogEntry(id).title}. Use the code from the PDF of that purchase.`,
+            onDone: (opened) => {
+              const names = opened.map((x) => packs.catalogEntry(x).title).join(' and ');
+              const n = opened.reduce((sum, x) => sum + packs.recipeCount(x), 0);
+              toast(`${names} unlocked — ${n} new recipes. Buon appetito!`, 4500);
+              if (opened.includes(id) && home.lib !== 'all') home.lib = id;
+              refresh();
+            },
+          });
+        }
+        box.querySelector('input').focus();
+      }
+      return;
+    }
     const fav = e.target.closest('[data-fav]');
     if (fav) {
-      const on = await toggleFavorite(Number(fav.dataset.fav));
+      const on = await toggleFavorite(fav.dataset.fav);
       fav.setAttribute('aria-pressed', String(on));
       toast(on ? 'Saved to your favorites.' : 'Removed from favorites.');
       if (home.chip === 'fav') redraw();
@@ -550,13 +767,13 @@ function ingredientsHtml(r, prog) {
 }
 
 function addToShopping(r, factor) {
-  const old = shopping.groups.find((g) => g.recipeNum === r.num);
+  const old = shopping.groups.find((g) => g.rid === r.rid);
   const items = r.ingredients.map((line) => {
     const text = scaleLine(line, factor);
     const prev = old && old.factor === factor && old.items.find((i) => i.text === text);
     return { text, checked: prev ? !!prev.checked : false };
   });
-  const group = { id: old ? old.id : uid('g'), recipeNum: r.num, title: r.title, factor, items };
+  const group = { id: old ? old.id : uid('g'), rid: r.rid, title: r.title, factor, items };
   if (old) shopping.groups[shopping.groups.indexOf(old)] = group;
   else shopping.groups.push(group);
   saveShopping();
@@ -565,16 +782,17 @@ function addToShopping(r, factor) {
 
 async function renderRecipe(r) {
   setChrome({ title: r.title, back: '#/' });
-  const prog = await loadProgress(r.num);
-  const ch = chapterByNum.get(r.chapter);
-  const idx = RECIPES.indexOf(r);
-  const prev = RECIPES[idx - 1];
-  const next = RECIPES[idx + 1];
+  const prog = await loadProgress(r.rid);
+  const ch = chapterOf(r);
+  const siblings = RECIPES.filter((x) => x.pack === r.pack);
+  const idx = siblings.indexOf(r);
+  const prev = siblings[idx - 1];
+  const next = siblings[idx + 1];
 
   main.innerHTML = `
   <article class="recipe">
     <header class="recipe-head">
-      <p class="eyebrow">Nº ${r.num} · ${esc(ch ? ch.title : '')}</p>
+      <p class="eyebrow">${multiPack() ? `${esc(packLabel(r.pack))} · ` : ''}Nº ${r.num} · ${esc(ch ? ch.title : '')}</p>
       <h1 class="recipe-title" tabindex="-1">${esc(r.title)}</h1>
       <p class="recipe-sub">${esc(r.subtitle)}</p>
       <ul class="facts">
@@ -585,9 +803,9 @@ async function renderRecipe(r) {
     </header>
 
     <div class="recipe-actions">
-      <a class="btn btn--big" href="#/cook/${r.num}">${icon('play')} Start cooking mode</a>
+      <a class="btn btn--big" href="#/cook/${r.rid}">${icon('play')} Start cooking mode</a>
       <div class="actions-2">
-        <button type="button" class="btn btn--secondary fav-toggle" data-action="fav" aria-pressed="${favorites.has(r.num)}">${icon('heart')}<span>${favorites.has(r.num) ? 'Saved' : 'Favorite'}</span></button>
+        <button type="button" class="btn btn--secondary fav-toggle" data-action="fav" aria-pressed="${favorites.has(r.rid)}">${icon('heart')}<span>${favorites.has(r.rid) ? 'Saved' : 'Favorite'}</span></button>
         <button type="button" class="btn btn--secondary" data-action="add-list">${icon('cart')}<span>Add to shopping list</span></button>
         <button type="button" class="btn btn--secondary actions-2__wide" data-action="add-plan">${icon('calendar')}<span>Add to plan</span></button>
       </div>
@@ -639,11 +857,11 @@ async function renderRecipe(r) {
       </div>
     </aside>
 
-    <p class="section"><a class="btn btn--big" href="#/cook/${r.num}">${icon('play')} Start cooking mode</a></p>
+    <p class="section"><a class="btn btn--big" href="#/cook/${r.rid}">${icon('play')} Start cooking mode</a></p>
 
     <nav class="recipe-nav" aria-label="More recipes">
-      ${prev ? `<a class="recipe-nav__link" href="#/recipe/${prev.num}">${icon('back')}<span><span class="small muted">Previous</span><br>${esc(prev.title)}</span></a>` : '<span></span>'}
-      ${next ? `<a class="recipe-nav__link recipe-nav__link--next" href="#/recipe/${next.num}"><span><span class="small muted">Next</span><br>${esc(next.title)}</span>${icon('next')}</a>` : ''}
+      ${prev ? `<a class="recipe-nav__link" href="#/recipe/${prev.rid}">${icon('back')}<span><span class="small muted">Previous</span><br>${esc(prev.title)}</span></a>` : '<span></span>'}
+      ${next ? `<a class="recipe-nav__link recipe-nav__link--next" href="#/recipe/${next.rid}"><span><span class="small muted">Next</span><br>${esc(next.title)}</span>${icon('next')}</a>` : ''}
     </nav>
   </article>`;
 
@@ -706,7 +924,7 @@ async function renderRecipe(r) {
       saveProgress(prog);
       toast('Ticks cleared.');
     } else if (a === 'fav') {
-      const on = await toggleFavorite(r.num);
+      const on = await toggleFavorite(r.rid);
       btn.setAttribute('aria-pressed', String(on));
       btn.querySelector('span').textContent = on ? 'Saved' : 'Favorite';
       toast(on ? 'Saved to your favorites.' : 'Removed from favorites.');
@@ -742,9 +960,9 @@ function releaseAwake() {
 }
 
 async function renderCook(r, startStep) {
-  setChrome({ title: `Cooking: ${r.title}`, back: `#/recipe/${r.num}`, nav: false });
+  setChrome({ title: `Cooking: ${r.title}`, back: `#/recipe/${r.rid}`, nav: false });
   document.body.classList.add('cooking');
-  const prog = await loadProgress(r.num);
+  const prog = await loadProgress(r.rid);
   const total = r.steps.length;
   let idx = Math.min(Math.max(1, startStep), total + 1); // total + 1 = the "finished" screen
   let countedMade = false;
@@ -752,7 +970,7 @@ async function renderCook(r, startStep) {
   main.innerHTML = `
   <div class="cook">
     <div class="cook-bar">
-      <a class="cook-bar__btn" href="#/recipe/${r.num}">${icon('close')}<span>Exit</span></a>
+      <a class="cook-bar__btn" href="#/recipe/${r.rid}">${icon('close')}<span>Exit</span></a>
       <p class="cook-bar__title">${esc(r.title)}</p>
       <button type="button" class="cook-bar__btn" data-action="ings" aria-haspopup="dialog">${icon('list')}<span>Ingredients</span></button>
     </div>
@@ -791,7 +1009,7 @@ async function renderCook(r, startStep) {
           <img class="sal-says__avatar" src="assets/sal-avatar.png" alt="" width="64" height="64">
           <div><p class="sal-says__label">Sal says</p><blockquote class="sal-says__quote">${esc(r.tip)}</blockquote></div>
         </aside>
-        <p><a class="btn btn--secondary btn--block" href="#/recipe/${r.num}">Back to the recipe</a></p>
+        <p><a class="btn btn--secondary btn--block" href="#/recipe/${r.rid}">Back to the recipe</a></p>
         <p><a class="btn btn--ghost btn--block" href="#/">All recipes</a></p>`;
       if (!countedMade) {
         countedMade = true;
@@ -807,7 +1025,7 @@ async function renderCook(r, startStep) {
     prevBtn.disabled = idx <= 1;
     nextBtn.hidden = finished;
     nextBtn.innerHTML = idx === total ? `Finish ${icon('check')}` : `Next step ${icon('next')}`;
-    history.replaceState(null, '', `#/cook/${r.num}/${idx}`);
+    history.replaceState(null, '', `#/cook/${r.rid}/${idx}`);
     if (focus) {
       const f = stepEl.querySelector('[tabindex="-1"]');
       if (f) f.focus({ preventScroll: true });
@@ -1023,7 +1241,7 @@ function renderList() {
     return `
     <section class="list-group" aria-labelledby="lg-${esc(g.id)}">
       <div class="list-group__head">
-        <h2 id="lg-${esc(g.id)}"><a href="#/recipe/${g.recipeNum}">${esc(g.title)}</a>${g.factor !== 1 ? ` <span class="factor-pill">${prettyFactor(g.factor)}</span>` : ''}</h2>
+        <h2 id="lg-${esc(g.id)}">${g.rid ? `<a href="#/recipe/${esc(g.rid)}">${esc(g.title)}</a>` : esc(g.title)}${g.factor !== 1 ? ` <span class="factor-pill">${prettyFactor(g.factor)}</span>` : ''}</h2>
         <button type="button" class="icon-btn no-print" data-remove-group="${esc(g.id)}" aria-label="Remove ${esc(g.title)} from the list">${icon('trash')}</button>
       </div>
       ${sec.rows.length ? `<ul class="ing-list">${sec.rows.map((r) => shopItemHtml(r, r.key)).join('')}</ul>` : '<p class="small muted">Nothing to buy here — you probably have it all.</p>'}
@@ -1240,16 +1458,17 @@ function plannedMeals(days) {
   const out = [];
   days.forEach((date) => meals().forEach((meal) => {
     const slot = getSlot(date, meal);
-    if (slot && byNum.get(slot.num)) out.push({ date, meal, slot, recipe: byNum.get(slot.num) });
+    if (slot && byRid.get(slot.rid)) out.push({ date, meal, slot, recipe: byRid.get(slot.rid) });
   }));
   return out;
 }
 
 function weekMoney(days) {
-  const t = { home: 0, restaurant: 0, saved: 0 };
+  const t = { home: 0, restaurant: 0, saved: 0, unpriced: 0 };
   plannedMeals(days).forEach(({ slot, recipe }) => {
     if (slot.leftover) return; // already counted on the day it was cooked
     const m = mealMoney(recipe, slot.factor || 1);
+    if (!m.priced) t.unpriced++;
     t.home += m.home;
     t.restaurant += m.restaurant;
   });
@@ -1259,7 +1478,7 @@ function weekMoney(days) {
 
 function slotHtml(date, meal) {
   const slot = getSlot(date, meal);
-  const r = slot && byNum.get(slot.num);
+  const r = slot && byRid.get(slot.rid);
   const label = `<p class="slot__meal">${MEAL_LABEL[meal]}</p>`;
   const where = `${weeks.dayName(date)} ${MEAL_LABEL[meal].toLowerCase()}`;
   if (!r) {
@@ -1279,7 +1498,7 @@ function slotHtml(date, meal) {
     return `<div class="slot slot--leftover" data-date="${date}" data-meal="${meal}"${canDrag ? ' draggable="true"' : ''}>
       ${label}
       <p class="slot__title">Leftovers from ${esc(weeks.dayName(slot.leftover.date))}</p>
-      <p class="slot__sub"><a href="#/recipe/${r.num}">${esc(r.title)}</a> · nothing to shop</p>
+      <p class="slot__sub"><a href="#/recipe/${r.rid}">${esc(r.title)}</a> · nothing to shop</p>
       <div class="slot__btns">${moveBtn}${removeBtn}</div>
     </div>`;
   }
@@ -1287,7 +1506,7 @@ function slotHtml(date, meal) {
   const money = moneyOn() ? (() => { const m = mealMoney(r, f); return ` · ~${dollars(m.home)} at home`; })() : '';
   return `<div class="slot${slot.made ? ' slot--made' : ''}" data-date="${date}" data-meal="${meal}"${canDrag ? ' draggable="true"' : ''}>
     ${label}
-    <p class="slot__title"><a href="#/recipe/${r.num}">${esc(r.title)}</a></p>
+    <p class="slot__title"><a href="#/recipe/${r.rid}">${esc(r.title)}</a></p>
     <p class="slot__sub">${esc(servesText(r, f))}${money}</p>
     <div class="slot__factors" role="group" aria-label="How much for ${esc(where)}">
       ${PLAN_FACTORS.map((x) => `<button type="button" class="chip chip--mini" data-plan-factor="${x}" aria-pressed="${f === x}">${prettyFactor(x)}</button>`).join('')}
@@ -1314,12 +1533,14 @@ function dayHtml(date) {
 function moneyFooterHtml(days) {
   if (!moneyOn()) return '';
   const t = weekMoney(days);
+  const note = t.unpriced ? `<p class="small muted" data-money="unpriced">${t.unpriced} planned meal${t.unpriced === 1 ? " doesn't" : "s don't"} have a price estimate yet, so ${t.unpriced === 1 ? "it isn't" : "they aren't"} counted.</p>` : '';
   if (!t.home && !t.restaurant) {
-    return `<section class="money-foot" aria-label="Money this week" id="money-foot"><p class="money-foot__line">Plan a few dinners and I'll show you what you keep.</p></section>`;
+    return `<section class="money-foot" aria-label="Money this week" id="money-foot"><p class="money-foot__line">Plan a few dinners and I'll show you what you keep.</p>${note}</section>`;
   }
   return `<section class="money-foot" aria-label="Money this week" id="money-foot">
     <p class="money-foot__line">This week at home: <strong data-money="home">~${dollars(t.home)}</strong>. At a restaurant: <strong data-money="restaurant">~${dollars(t.restaurant)}</strong>. You keep <strong class="money-foot__keep" data-money="keep">~${dollars(t.saved)}</strong>.</p>
     <p class="small muted">Restaurant numbers are a typical restaurant price, estimate — not a quote. Home costs are Sal's estimates. Tax and tip not included.</p>
+    ${note}
   </section>`;
 }
 
@@ -1328,7 +1549,7 @@ function menuText(days) {
   days.forEach((date) => {
     const parts = meals().map((meal) => {
       const slot = getSlot(date, meal);
-      const r = slot && byNum.get(slot.num);
+      const r = slot && byRid.get(slot.rid);
       if (!r) return null;
       const what = slot.leftover ? `Leftovers (${r.title})` : `${r.title}${(slot.factor || 1) !== 1 ? ` (${prettyFactor(slot.factor)})` : ''}`;
       return planSettings.lunch ? `${MEAL_LABEL[meal]}: ${what}` : what;
@@ -1386,16 +1607,13 @@ function openSheet(title, bodyHtml, onClick) {
 // "+" → searchable recipe picker with chapter chips.
 function openRecipePicker(where, onPick) {
   const state = { q: '', chip: 'all' };
-  const chips = [['all', 'All'], ['fav', `${icon('heart')} Favorites`], ...CHAPTERS.map((c) => [String(c.num), esc(chipLabel(c))])];
+  const chips = [['all', 'All'], ['fav', `${icon('heart')} Favorites`], ...CHAPTERS.map((c) => [c.key, esc(chipLabel(c))])];
   const listHtml = () => {
-    const words = fold(state.q).split(/\s+/).filter(Boolean);
-    let list = RECIPES.filter((r) => matches(r, words));
-    if (state.chip === 'fav') list = list.filter((r) => favorites.has(r.num));
-    else if (state.chip !== 'all') list = list.filter((r) => r.chapter === Number(state.chip));
+    const { list } = filterRecipes({ q: state.q, chip: state.chip, lib: 'all' });
     if (!list.length) return '<p class="empty">Nothing matches. Try one word, like <em>chicken</em>.</p>';
-    return `<ul class="pick-list">${list.map((r) => `<li><button type="button" class="pick" data-pick="${r.num}">
+    return `<ul class="pick-list">${list.map((r) => `<li><button type="button" class="pick" data-pick="${r.rid}">
       <span class="pick__title">${esc(r.title)}</span>
-      <span class="pick__meta">${esc(chipLabel(chapterByNum.get(r.chapter)))} · ${esc(r.time)} · ${esc(servesText(r))}</span>
+      <span class="pick__meta">${multiPack() ? `${esc(packLabel(r.pack))} · ` : ''}${esc(chipLabel(chapterOf(r) || { title: '' }))} · ${esc(r.time)} · ${esc(servesText(r))}</span>
     </button></li>`).join('')}</ul>`;
   };
   const sheet = openSheet(`Add to ${esc(where)}`, `
@@ -1417,7 +1635,7 @@ function openRecipePicker(where, onPick) {
     const pick = e.target.closest('[data-pick]');
     if (pick) {
       close();
-      onPick(byNum.get(Number(pick.dataset.pick)));
+      onPick(byRid.get(pick.dataset.pick));
     }
   });
   const input = sheet.el.querySelector('#pick-q');
@@ -1442,20 +1660,20 @@ function openDayChooser(title, intro, choices, onChoose) {
 
 function slotNote(date, meal) {
   const s = getSlot(date, meal);
-  const r = s && byNum.get(s.num);
+  const r = s && byRid.get(s.rid);
   if (!r) return 'Free';
   return s.leftover ? `Leftovers (${r.title})` : r.title;
 }
 
 async function markMade(date, meal, made) {
   const slot = getSlot(date, meal);
-  const r = slot && byNum.get(slot.num);
+  const r = slot && byRid.get(slot.rid);
   if (!r || slot.leftover || !!slot.made === made) return null;
   const next = { ...slot, made };
   let saved = 0;
   if (made) {
     const m = mealMoney(r, slot.factor || 1);
-    const entry = { id: uid('s'), date, meal, num: r.num, factor: slot.factor || 1, servings: m.servings, home: m.home, restaurant: m.restaurant, saved: m.saved, at: new Date().toISOString() };
+    const entry = { id: uid('s'), date, meal, rid: r.rid, factor: slot.factor || 1, servings: m.servings, home: m.home, restaurant: m.restaurant, saved: m.saved, at: new Date().toISOString() };
     await db.putSaving(entry);
     next.savedId = entry.id;
     saved = m.saved;
@@ -1544,7 +1762,7 @@ async function renderPlan() {
     }
     if (a === 'pick') {
       openRecipePicker(where(date, meal), async (r) => {
-        await setSlot(date, meal, { num: r.num, factor: 1 });
+        await setSlot(date, meal, { rid: r.rid, factor: 1 });
         toast(`${r.title} — ${weeks.dayName(date)}.`);
         refresh();
       });
@@ -1554,13 +1772,13 @@ async function renderPlan() {
       const sources = [];
       days.forEach((d) => meals().forEach((m) => {
         const s = getSlot(d, m);
-        if (s && !s.leftover && byNum.get(s.num) && (d < date || (d === date && m === 'lunch' && meal === 'dinner'))) {
-          sources.push({ date: d, meal: m, label: `${weeks.dayName(d)}${planSettings.lunch ? ` ${MEAL_LABEL[m].toLowerCase()}` : ''}`, note: byNum.get(s.num).title });
+        if (s && !s.leftover && byRid.get(s.rid) && (d < date || (d === date && m === 'lunch' && meal === 'dinner'))) {
+          sources.push({ date: d, meal: m, label: `${weeks.dayName(d)}${planSettings.lunch ? ` ${MEAL_LABEL[m].toLowerCase()}` : ''}`, note: byRid.get(s.rid).title });
         }
       }));
       if (!sources.length) return toast('Plan a meal earlier in the week first — then eat the leftovers.', 4000);
       openDayChooser(`Leftovers for ${where(date, meal)}`, 'Which meal are you finishing up? Nothing goes on the shopping list.', sources, async (c) => {
-        await setSlot(date, meal, { num: getSlot(c.date, c.meal).num, factor: 1, leftover: { date: c.date, meal: c.meal } });
+        await setSlot(date, meal, { rid: getSlot(c.date, c.meal).rid, factor: 1, leftover: { date: c.date, meal: c.meal } });
         toast('Leftovers it is. Smart.');
         refresh();
       });
@@ -1573,14 +1791,14 @@ async function renderPlan() {
         const occupied = getSlot(d, m);
         choices.push({ date: d, meal: m, label: `${weeks.dayName(d)}${planSettings.lunch ? ` ${MEAL_LABEL[m].toLowerCase()}` : ''}`, note: occupied ? `Swap with ${slotNote(d, m)}` : 'Free' });
       }));
-      const r = byNum.get(getSlot(date, meal).num);
+      const r = byRid.get(getSlot(date, meal).rid);
       openDayChooser(`Move ${r.title}`, '', choices, (c) => moveSlot(date, meal, c.date, c.meal));
       return;
     }
     if (a === 'remove') {
       const s = getSlot(date, meal);
       await setSlot(date, meal, null);
-      toast(`${byNum.get(s.num).title} removed.`);
+      toast(`${(byRid.get(s.rid) || { title: 'Meal' }).title} removed.`);
       return refresh();
     }
     if (a === 'made') {
@@ -1604,10 +1822,10 @@ async function renderPlan() {
     if (a === 'surprise') {
       const empty = days.filter((d) => !getSlot(d, 'dinner'));
       if (!empty.length) return toast('Every dinner is planned already. Clear a day for a surprise.', 4000);
-      const taken = plannedMeals(days).map((p) => p.recipe.num);
-      const picks = surprisePicks(empty.length, taken, RECIPES);
+      const taken = plannedMeals(days).map((p) => p.recipe.rid);
+      const picks = surprisePicks(empty.length, taken, RECIPES, Math.random, chapterTitleOf);
       if (!picks.length) return toast("I'm out of new ideas for this week — the rest is up to you.", 4000);
-      await setSlots(picks.map((r, i) => [empty[i], 'dinner', { num: r.num, factor: 1 }]));
+      await setSlots(picks.map((r, i) => [empty[i], 'dinner', { rid: r.rid, factor: 1 }]));
       toast(picks.length === 1 ? 'One dinner, picked.' : `${picks.length} dinners, picked. No repeats.`);
       return refresh();
     }
@@ -1615,9 +1833,9 @@ async function renderPlan() {
       const totals = new Map();
       plannedMeals(days).forEach(({ slot, recipe }) => {
         if (slot.leftover) return;
-        totals.set(recipe.num, (totals.get(recipe.num) || 0) + (slot.factor || 1));
+        totals.set(recipe.rid, (totals.get(recipe.rid) || 0) + (slot.factor || 1));
       });
-      totals.forEach((f, num) => addToShopping(byNum.get(num), f));
+      totals.forEach((f, rid) => addToShopping(byRid.get(rid), f));
       toast(`${totals.size} recipe${totals.size === 1 ? '' : 's'} added to your shopping list.`);
       location.hash = '#/list';
       return;
@@ -1679,7 +1897,7 @@ async function moveSlot(fromDate, fromMeal, toDate, toMeal) {
   const b = getSlot(toDate, toMeal);
   if (!a) return;
   await setSlots([[toDate, toMeal, a], [fromDate, fromMeal, b]]);
-  const r = byNum.get(a.num);
+  const r = byRid.get(a.rid) || { title: 'Meal' };
   toast(`${a.leftover ? 'Leftovers' : r.title} moved to ${weeks.dayName(toDate)}.`);
   refresh();
 }
@@ -1722,7 +1940,7 @@ function openAddToPlan(r, factor) {
       if (!b) return;
       const c = choices[Number(b.dataset.choose)];
       close();
-      await setSlot(c.date, c.meal, { num: r.num, factor: f });
+      await setSlot(c.date, c.meal, { rid: r.rid, factor: f });
       toast(`Planned for ${weeks.dayName(c.date)}. Open Plan to see your week.`, 3500);
     });
     return sheet;
@@ -1736,7 +1954,7 @@ async function markCookedToday(r) {
   await ensureWeeks([d]);
   for (const meal of ['dinner', 'lunch']) {
     const s = getSlot(d, meal);
-    if (s && s.num === r.num && !s.leftover && !s.made) return markMade(d, meal, true);
+    if (s && s.rid === r.rid && !s.leftover && !s.made) return markMade(d, meal, true);
   }
   return null;
 }
@@ -1781,6 +1999,19 @@ async function renderSettings() {
         <label><input type="radio" name="theme" value="light" ${theme === 'light' ? 'checked' : ''}> Light</label>
         <label><input type="radio" name="theme" value="dark" ${theme === 'dark' ? 'checked' : ''}> Dark</label>
       </fieldset>
+    </section>
+
+    <section class="section" aria-labelledby="books-title" id="books">
+      <h2 id="books-title">Your recipe books</h2>
+      <ul class="book-list">
+        ${packs.CATALOG.map((p) => `<li class="book${packs.isOpen(p.id) ? ' book--open' : ''}">
+          <span class="book__icon">${icon(packs.isOpen(p.id) ? 'book' : 'lock')}</span>
+          <span class="book__body"><strong>${esc(p.title)}</strong>
+            <span class="small muted">${packs.isOpen(p.id) ? `${packs.recipeCount(p.id)} recipes · unlocked on this device` : `${packs.recipeCount(p.id)} recipes · locked`}</span></span>
+          ${packs.isOpen(p.id) ? '' : `<a class="btn btn--secondary btn--small" href="${esc(p.storeUrl)}" target="_blank" rel="noopener">Get it</a>`}
+        </li>`).join('')}
+      </ul>
+      ${lockedIds().length ? `<p>Bought another book? Enter its code here.</p>${codeFormHtml('books-code', 'Unlock')}` : ''}
     </section>
 
     <section class="section" aria-labelledby="plan-set-title" id="plan-settings">
@@ -1953,8 +2184,10 @@ async function renderSettings() {
         const msg = `Restore the backup${when}?\n\nIt has ${favCount} favorite${favCount === 1 ? '' : 's'} and your shopping list${v2 ? ', week plans, pantry staples and savings' : ''}. It replaces ${v2 ? 'all of those' : 'the favorites, ticks and shopping list'} on this device.`;
         if (!confirm(msg)) return;
         await db.importAll(data);
-        favorites = new Set(data.favorites || []);
-        shopping = data.shopping || db.emptyShopping();
+        // Read back what was saved: older backups get their recipe numbers turned into ids.
+        const [f2, s2] = await Promise.all([db.getMeta('favorites'), db.getMeta('shopping')]);
+        favorites = new Set(Array.isArray(f2) ? f2 : []);
+        shopping = s2 && Array.isArray(s2.groups) ? s2 : db.emptyShopping();
         await loadPlannerState();
         updateListBadge();
         toast('Backup restored.');
@@ -1966,6 +2199,16 @@ async function renderSettings() {
     }
   };
 
+  const booksForm = main.querySelector('#books .code-form');
+  if (booksForm) {
+    wireCodeForm(booksForm, {
+      noneMessage: "That code doesn't open another book. Use the code from the PDF of your new purchase.",
+      onDone: (opened) => {
+        toast(`${opened.map((x) => packs.catalogEntry(x).title).join(' and ')} unlocked. Buon appetito!`, 4500);
+        refresh();
+      },
+    });
+  }
   main.addEventListener('click', onClick);
   main.addEventListener('click', onRemovePantry);
   main.addEventListener('change', onChange);
@@ -1999,9 +2242,45 @@ document.addEventListener('sal-db-blocked', () => {
   main.innerHTML = `<div class="card"><h1>One moment</h1><p>Sal's Kitchen just got an update. Please close any other tabs or windows with Sal's Kitchen open — this page continues by itself.</p></div>`;
 });
 
+// Fetch the pack files and open the ones this device has keys for.
+async function loadPacks(opts) {
+  try {
+    await packs.init(opts);
+  } catch (e) {
+    if (e && e.message === 'nocrypto') throw e;
+    console.error(e);
+  }
+  rebuildIndex();
+}
+
+// Codes this device used before may open packs that were added since (bundle codes).
+function checkRememberedCodes() {
+  if (!ready()) return;
+  packs.tryRememberedCodes().then((opened) => {
+    if (!opened.length) return;
+    rebuildIndex();
+    toast(`${opened.map((x) => packs.catalogEntry(x).title).join(' and ')} unlocked — your code opens it too. Buon appetito!`, 5000);
+    refresh();
+  }).catch((e) => console.error(e));
+}
+
 async function start() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('sw.js').catch((e) => console.warn('Offline support not available:', e));
+  }
+  try {
+    await loadPacks();
+    // A pack was rebuilt with a new key: the code this device remembers usually still opens it.
+    // Try that first, so nobody is asked for their code again for no reason.
+    const stale = packs.CATALOG.map((p) => p.id).filter((id) => packs.hasStaleKey(id));
+    if (stale.length) {
+      main.innerHTML = '<p class="loading">Opening your recipes…</p>';
+      await packs.tryRememberedCodes({ only: stale }).catch((e) => console.error(e));
+      rebuildIndex();
+    }
+  } catch (e) {
+    main.innerHTML = `<div class="card"><h1>Please update your browser</h1><p>This browser can't open Sal's recipes safely. Please update it, or open the app in a current version of Safari, Chrome, Edge or Firefox.</p><p>Questions? Email <a href="mailto:${esc(SUPPORT_EMAIL)}">${esc(SUPPORT_EMAIL)}</a>.</p></div>`;
+    return;
   }
   try {
     const [u, f, s] = await Promise.all([db.getMeta('unlocked'), db.getMeta('favorites'), db.getMeta('shopping')]);
@@ -2017,7 +2296,8 @@ async function start() {
   if (unlocked && install.isStandalone()) requestPersistentStorage();
 
   window.addEventListener('hashchange', route);
-  route();
+  await route();
+  checkRememberedCodes();
 }
 
 start();

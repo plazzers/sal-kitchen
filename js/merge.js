@@ -203,9 +203,17 @@ export function pantryNames(ids = [], custom = []) {
 }
 
 // True when every ingredient on the line is a staple ("2 tsp salt", "Kosher salt and black pepper").
+const AMOUNT = '(?:\\d+\\s+\\d+\\/\\d+|\\d+\\/\\d+|\\d+(?:\\.\\d+)?)';
+// "3/4 cup + 2 tbsp + 1 tsp " at the start of a line (two or more parts joined by +).
+const COMBINED_AMOUNT_RE = new RegExp(`^${AMOUNT}\\s+[A-Za-z]+\\.?(?:\\s*\\+\\s*${AMOUNT}\\s+[A-Za-z]+\\.?)+\\s+`);
+const isCombinedAmount = (s) => (s.match(/[A-Za-z]+/g) || []).every((w) => UNIT_ALIASES[w.toLowerCase()]);
+
 export function isPantryLine(line, names) {
   if (!names || !names.size) return false;
   let text = String(line).trim();
+  // A Combined-view amount ("3/4 cup + 2 tbsp butter") is still one ingredient.
+  const sum = text.match(COMBINED_AMOUNT_RE);
+  if (sum && isCombinedAmount(sum[0])) text = text.slice(sum[0].length);
   if (/[():+]/.test(text)) return false;
   // Drop a leading amount and unit.
   text = text.replace(/^(?:\d+\s+\d+\/\d+|\d+\/\d+|\d+(?:\.\d+)?)\s+/, '');

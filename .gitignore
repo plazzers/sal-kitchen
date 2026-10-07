@@ -1,0 +1,11 @@
+# Never commit plaintext recipes or access codes (see README, "Recipe packs").
+*.plain.json
+*-codes.txt
+secrets/
+
+# Python
+__pycache__/
+*.pyc
+
+# Test output
+tests/browser/screenshots/

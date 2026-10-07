@@ -10,11 +10,16 @@ export const YOUTUBE_URL = "https://www.youtube.com/@ChefSalRomano";
 export const STORE_URL = "https://payhip.com/SalRomano";
 export const SUPPORT_EMAIL = "salromanochef@outlook.com";
 
+// "Get it" link on the locked Sal's Italian Kitchen card
+export const ITALIAN_STORE_URL = "https://payhip.com/b/Lv425?utm_source=app&utm_medium=locked-pack&utm_campaign=italian";
+
 // Access codes. Never put the real codes here — only their "hash".
-// Make a hash with tools/make-code-hash.html, then paste it as a new line
-// inside the square brackets below (one line per code, each ending with a comma).
+// This list is only a quick first check ("is this any valid code?"). What really opens
+// the recipes is the code itself, which unlocks the encrypted packs in packs/ (see README).
+// So every code needs BOTH: its hash here, and a place in a pack (tools/build_packs.py).
+// Make a hash with tools/make-code-hash.html (or build_packs.py --print-hashes), then paste
+// it as a new line inside the square brackets below (one line per code, each ending with a comma).
 // Codes are not case-sensitive (sal-abcd-1234 works the same as SAL-ABCD-1234).
-// While this list is empty, no code will unlock the app.
 export const ACCESS_CODE_HASHES = [
   "7bbb8504a61319e0f0f17663d81ce0930b2efe4686525369bdd09c180aa261c4", // code #1
   "2e9eb1e1c3d6daa24592b382f3a45ba7573da183f85cbcd4e6b40823ca1f4bf5", // code #2

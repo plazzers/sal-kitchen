@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Recipe pack self-tests — Sal's Kitchen</title>
+<style>
+  :root { color-scheme: light dark; --bg: #f8f2e7; --ink: #2a1d17; --card: #fffcf6; --line: #e2d5c1; --ok: #3f6a2a; --bad: #a12620; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #16110e; --ink: #f3eadc; --card: #211914; --line: #3f3229; --ok: #a9d48a; --bad: #ff9a90; } }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 820px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.5rem; margin: 0 0 6px; }
+  #summary { font-weight: 700; font-size: 1.15rem; padding: 12px 16px; border-radius: 10px; background: var(--card); border: 1px solid var(--line); }
+  ul { list-style: none; padding: 0; }
+  li { padding: 6px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+  .ok::before { content: "✓ "; color: var(--ok); font-weight: 800; }
+  .bad { color: var(--bad); }
+  .bad::before { content: "✗ "; font-weight: 800; }
+  h2 { font-size: 1.1rem; margin: 22px 0 4px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Recipe pack self-tests</h1>
+  <p>Checks the encrypted recipe packs, the access codes, and the move from recipe numbers to <code>copycat:&lt;number&gt;</code>. It uses the TEST packs and test codes in <code>tests/fixtures/</code> and its own test storage. It never touches the real packs or anything saved in the app. Opening the packs takes a few seconds.</p>
+  <p id="summary" role="status">Running…</p>
+  <div id="out"></div>
+</main>
+<script src="../js/sha256.js"></script>
+<script type="module">
+import * as pc from '../js/packcrypto.js';
+import * as mig from '../js/migrate.js';
+import * as db from '../js/db.js';
+import { surprisePicks, canAutoPick, MAX_PER_CHAPTER } from '../js/plan.js';
+import { mealMoney, addEstimates, restaurantPrice, homeCost } from '../js/money.js';
+import { mergeTexts } from '../js/merge.js';
+import { scaleLine } from '../js/scale.js';
+import { seedOldDatabase, deleteDatabase } from './seed-db.js';
+
+const results = [];
+let section = '';
+const out = document.getElementById('out');
+function group(name) {
+  section = name;
+  const h = document.createElement('h2');
+  h.textContent = name;
+  out.appendChild(h);
+  out.appendChild(document.createElement('ul'));
+}
+function check(name, ok, detail = '') {
+  results.push({ section, name, ok: !!ok, detail });
+  const li = document.createElement('li');
+  li.className = ok ? 'ok' : 'bad';
+  li.textContent = name + (ok || !detail ? '' : ` — ${detail}`);
+  out.lastElementChild.appendChild(li);
+}
+const eq = (name, got, want) => check(name, JSON.stringify(got) === JSON.stringify(want), `got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`);
+const getJson = async (url) => (await fetch(url, { cache: 'no-cache' })).json();
+
+try {
+  const copycat = await getJson('fixtures/copycat.pack.json');
+  const italian = await getJson('fixtures/italian.pack.json');
+  const cfg = await getJson('fixtures/test-config.json');
+  const opens = async (pack, code) => !!(await pc.unwrapWithCode(pack, code));
+  const openPack = async (pack, code) => pc.decryptPack(pack, await pc.importContentKey(await pc.unwrapWithCode(pack, code)));
+
+  // ---------- 1. Python ↔ browser ----------
+  group('Packs built by Python open in the browser');
+  check('copycat pack file has the expected shape', pc.isPackFile(copycat) && copycat.id === 'copycat' && copycat.iterations === 250000 && copycat.kdf === 'PBKDF2-SHA256' && copycat.cipher === 'AES-GCM');
+  check('italian pack file has the expected shape', pc.isPackFile(italian) && italian.id === 'italian');
+  check('the pack file holds no plain recipe text', !JSON.stringify(copycat).includes('Parmigiana') && !JSON.stringify(italian).includes('Test Risotto'));
+  const cc = await openPack(copycat, 'SAL-TEST-AAAA-1111');
+  eq('copycat test code opens 33 recipes', cc.recipes.length, 33);
+  eq('copycat has 6 chapters', cc.chapters.length, 6);
+  eq('recipe 5 is Chicken Parmigiana', cc.recipes.find((r) => r.num === 5).title, 'Chicken Parmigiana');
+  eq('recipeCount on the outside matches', copycat.recipeCount, 33);
+  const it = await openPack(italian, 'SAL-TEST-ITAL-3333');
+  eq('italian test code opens 10 fake recipes in 7 chapters', [it.recipes.length, it.chapters.length], [10, 7]);
+  check('every recipe has the full shape', [...cc.recipes, ...it.recipes].every((r) => Number.isInteger(r.num) && r.chapter && r.title && r.subtitle && r.serves && r.time && r.cost && r.ingredients.length && r.steps.length && r.tip));
+
+  group('Access codes');
+  check('second copycat code works too', await opens(copycat, 'SAL-TEST-AAAA-2222'));
+  check('codes ignore case and outer spaces', await opens(copycat, '  sal-test-aaaa-1111 '));
+  check('copycat code does NOT open the italian pack', !(await opens(italian, 'SAL-TEST-AAAA-1111')));
+  check('italian code does NOT open the copycat pack', !(await opens(copycat, 'SAL-TEST-ITAL-3333')));
+  check('bundle code opens copycat', await opens(copycat, 'SAL-TEST-BOTH-4444'));
+  check('bundle code opens italian', await opens(italian, 'SAL-TEST-BOTH-4444'));
+  check('a wrong code opens nothing', !(await opens(copycat, 'SAL-TEST-WRONG-0000')) && !(await opens(italian, 'SAL-TEST-WRONG-0000')));
+  check('a dash missing is a different code', !(await opens(copycat, 'SAL-TEST-AAAA1111')));
+  check('a code that passes the hash pre-check but has no key slot opens nothing', cfg.accessCodeHashes.includes(await SalHash.sha256Hex('SAL-TEST-HASH-9999')) && !(await opens(copycat, 'SAL-TEST-HASH-9999')) && !(await opens(italian, 'SAL-TEST-HASH-9999')));
+  let threw = false;
+  try {
+    const bad = { ...copycat, ciphertext: copycat.ciphertext.slice(0, -8) + (copycat.ciphertext.slice(-8, -7) === 'A' ? 'B' : 'A') + copycat.ciphertext.slice(-7) };
+    await openPack(bad, 'SAL-TEST-AAAA-1111');
+  } catch (e) { threw = true; }
+  check('a damaged pack file is refused (not shown half-broken)', threw);
+  threw = false;
+  try { await pc.decryptPack(italian, await pc.importContentKey(await pc.unwrapWithCode(copycat, 'SAL-TEST-AAAA-1111'))); } catch (e) { threw = true; }
+  check("one pack's key can't open another pack", threw);
+
+  group('Saved keys (offline after unlock)');
+  const T = 'sals-kitchen-selftest-packs';
+  await db.closeDB();
+  await deleteDatabase(T);
+  db.useDatabase(T);
+  const raw = await pc.unwrapWithCode(copycat, 'SAL-TEST-AAAA-1111');
+  const key = await pc.importContentKey(raw);
+  check('the saved key cannot be read back out', key.extractable === false);
+  let savedAs = 'CryptoKey';
+  try { await db.putPackKey({ id: 'copycat', key, version: 1 }); } catch (e) { savedAs = 'raw'; await db.putPackKey({ id: 'copycat', raw, version: 1 }); }
+  const rec = (await db.listPackKeys()).find((r) => r.id === 'copycat');
+  const back = rec.key || await pc.importContentKey(rec.raw);
+  eq(`key saved on this device (as ${savedAs}) opens the pack with no code`, (await pc.decryptPack(copycat, back)).recipes.length, 33);
+  await db.putPackKey({ id: 'italian', raw: await pc.unwrapWithCode(italian, 'SAL-TEST-ITAL-3333'), version: 1 });
+  const rec2 = (await db.listPackKeys()).find((r) => r.id === 'italian');
+  eq('raw-bytes fallback also works', (await pc.decryptPack(italian, await pc.importContentKey(rec2.raw))).recipes.length, 10);
+  await db.closeDB();
+  await deleteDatabase(T);
+
+  // ---------- 2. References ----------
+  group('Recipe references: number → copycat:<number>');
+  eq('5 → copycat:5', mig.toRid(5), 'copycat:5');
+  eq('"12" → copycat:12', mig.toRid('12'), 'copycat:12');
+  eq('copycat:5 stays', mig.toRid('copycat:5'), 'copycat:5');
+  eq('italian:7 stays', mig.toRid('italian:7'), 'italian:7');
+  eq('junk → null', [mig.toRid(0), mig.toRid(-1), mig.toRid(1.5), mig.toRid('abc'), mig.toRid(null)], [null, null, null, null, null]);
+  eq('favorites (and no duplicates)', mig.migrateFavorites([2, 5, 'copycat:5', 'italian:1']), ['copycat:2', 'copycat:5', 'italian:1']);
+  eq('progress record', mig.migrateProgress({ num: 5, ticks: [0], done: [1], factor: 2 }), { rid: 'copycat:5', ticks: [0], done: [1], factor: 2 });
+  eq('saving keeps every field', mig.migrateSaving({ id: 's1', num: 5, saved: 120, home: 24 }), { id: 's1', saved: 120, home: 24, rid: 'copycat:5' });
+  eq('plan slot keeps made / savedId / leftover', mig.migratePlanWeek({ week: 'W', days: { d: { dinner: { num: 5, factor: 2, made: true, savedId: 's1' }, lunch: { num: 3, factor: 1, leftover: { date: 'x', meal: 'dinner' } } } } }),
+    { week: 'W', days: { d: { dinner: { factor: 2, made: true, savedId: 's1', rid: 'copycat:5' }, lunch: { factor: 1, leftover: { date: 'x', meal: 'dinner' }, rid: 'copycat:3' } } } });
+  const once = mig.migrateBackup({ app: 'sals-kitchen', format: 2, favorites: [1], shopping: { groups: [{ id: 'g', recipeNum: 1, title: 'x', factor: 1, items: [] }], custom: [] }, progress: [{ num: 1, ticks: [], done: [], factor: 1 }], plans: [], savings: [] });
+  eq('migrating twice changes nothing', mig.migrateBackup(once), once);
+
+  // ---------- 3. Database upgrade ----------
+  const fx = await getJson('fixtures/v2-database.json');
+  for (const version of [2, 1]) {
+    group(`Database upgrade from the v${version} app (real saved shape)`);
+    const NAME = `sals-kitchen-selftest-v${version}`;
+    await db.closeDB();
+    await seedOldDatabase(NAME, version, fx);
+    db.useDatabase(NAME);
+    eq('still unlocked', await db.getMeta('unlocked'), fx.meta.unlocked);
+    eq('favorites', await db.getMeta('favorites'), ['copycat:2', 'copycat:5', 'copycat:30']);
+    const shop = await db.getMeta('shopping');
+    eq('shopping groups point at copycat recipes', shop.groups.map((g) => [g.id, g.rid, g.recipeNum]), [['g-mfx1-abc123', 'copycat:5', undefined], ['g-mfx2-def456', 'copycat:30', undefined]]);
+    eq('shopping items and ticks unchanged', shop.groups.map((g) => g.items), fx.meta.shopping.groups.map((g) => g.items));
+    eq('own extras unchanged', shop.custom, fx.meta.shopping.custom);
+    eq('ticks for recipe 5', await db.getProgress('copycat:5'), { rid: 'copycat:5', ticks: [0, 2], done: [1], factor: 2 });
+    eq('every ticks record moved', (await db.listProgress()).map((p) => p.rid).sort(), ['copycat:30', 'copycat:5']);
+    eq('other settings untouched', [await db.getMeta('installBannerDismissed'), await db.getMeta('lastBackup')], [true, '2026-09-30T08:00:00.000Z']);
+    if (version === 2) {
+      const wk = await db.getPlanWeek('2026-W41');
+      eq('planned dinner (made, with savings link)', wk.days['2026-10-05'].dinner, { factor: 2, made: true, savedId: 's-mfx4-jkl012', rid: 'copycat:5' });
+      eq('leftovers slot', wk.days['2026-10-06'].dinner, { factor: 1, leftover: { date: '2026-10-05', meal: 'dinner' }, rid: 'copycat:5' });
+      eq('lunch slot', wk.days['2026-10-06'].lunch, { factor: 0.5, rid: 'copycat:17' });
+      eq('savings history keeps its numbers', await db.listSavings(), [{ id: 's-mfx4-jkl012', date: '2026-10-05', meal: 'dinner', factor: 2, servings: 8, home: 24, restaurant: 144, saved: 120, at: '2026-10-05T20:00:00.000Z', rid: 'copycat:5' }]);
+      eq('pantry and planner settings untouched', [await db.getMeta('pantry'), await db.getMeta('planSettings')], [fx.meta.pantry, fx.meta.planSettings]);
+    } else {
+      eq('new stores exist and are empty', [await db.listPlans(), await db.listSavings(), await db.listPackKeys()], [[], [], []]);
+    }
+    await db.closeDB();
+    db.useDatabase(NAME);
+    eq('opening again changes nothing', await db.getMeta('favorites'), ['copycat:2', 'copycat:5', 'copycat:30']);
+    await db.closeDB();
+    await deleteDatabase(NAME);
+  }
+
+  group('Backups');
+  const B = 'sals-kitchen-selftest-backup';
+  await deleteDatabase(B);
+  db.useDatabase(B);
+  const v2backup = { app: 'sals-kitchen', format: 2, exportedAt: '2026-10-01T10:00:00Z', favorites: fx.meta.favorites, shopping: fx.meta.shopping, progress: fx.progress, plans: fx.plans, savings: fx.savings, pantry: fx.meta.pantry, planSettings: fx.meta.planSettings };
+  await db.importAll(db.validateBackup(JSON.parse(JSON.stringify(v2backup))));
+  eq('v2 backup: favorites become ids', await db.getMeta('favorites'), ['copycat:2', 'copycat:5', 'copycat:30']);
+  eq('v2 backup: ticks', (await db.getProgress('copycat:5')).ticks, [0, 2]);
+  eq('v2 backup: plan', (await db.getPlanWeek('2026-W41')).days['2026-10-05'].dinner.rid, 'copycat:5');
+  eq('v2 backup: savings', (await db.listSavings())[0].rid, 'copycat:5');
+  eq('v2 backup: shopping group', (await db.getMeta('shopping')).groups[0].rid, 'copycat:5');
+  await db.setMeta('favorites', ['copycat:2', 'italian:4']);
+  await db.putProgress({ rid: 'italian:4', ticks: [1], done: [], factor: 1 });
+  const v3 = JSON.parse(JSON.stringify(await db.exportAll()));
+  eq('new backups are format 3', v3.format, 3);
+  check('backups never hold codes or pack keys', !/packKeys|wrappedKey|"codes"|SAL-TEST/.test(JSON.stringify(v3)));
+  await db.setMeta('favorites', []);
+  await db.importAll(db.validateBackup(v3));
+  eq('format 3 round-trip across packs', [await db.getMeta('favorites'), (await db.getProgress('italian:4')).ticks], [['copycat:2', 'italian:4'], [1]]);
+  let msg = '';
+  try { db.validateBackup({ ...v3, favorites: ['nonsense'] }); } catch (e) { msg = e.message; }
+  check('a damaged format 3 backup is refused', /damaged/.test(msg), msg);
+  await db.closeDB();
+  await deleteDatabase(B);
+
+  // ---------- 4. Planner, money and shopping across packs ----------
+  group('Planner, money and shopping list across packs');
+  const prep = (id, d) => d.recipes.map((r) => ({ ...r, pack: id, rid: `${id}:${r.num}` }));
+  const ALL = [...prep('copycat', cc), ...prep('italian', it)];
+  const chTitle = (r) => ((r.pack === 'copycat' ? cc : it).chapters.find((c) => c.num === r.chapter) || {}).title;
+  eq('Italian dinners Surprise me may pick (by chapter name)', ALL.filter((r) => r.pack === 'italian' && canAutoPick(r, chTitle)).map((r) => r.num), [2, 3, 4, 5, 6, 7]);
+  let seed = 777;
+  const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+  const problems = [];
+  let sawItalian = false;
+  for (let run = 0; run < 200; run++) {
+    const picks = surprisePicks(7, [], ALL, rand, chTitle);
+    if (picks.length !== 7) problems.push(`run ${run}: ${picks.length} picks`);
+    if (new Set(picks.map((r) => r.rid)).size !== picks.length) problems.push(`run ${run}: repeat`);
+    const per = {};
+    picks.forEach((r) => { per[`${r.pack}:${r.chapter}`] = (per[`${r.pack}:${r.chapter}`] || 0) + 1; });
+    if (Object.values(per).some((n) => n > MAX_PER_CHAPTER)) problems.push(`run ${run}: too many from one chapter`);
+    picks.forEach((r) => {
+      if (!canAutoPick(r, chTitle)) problems.push(`run ${run}: ${r.title}`);
+      if (/Dolci|Sughi|Contorni|Antipasti/.test(chTitle(r))) problems.push(`run ${run}: ${r.title} (${chTitle(r)})`);
+      if (r.pack === 'italian') sawItalian = true;
+    });
+  }
+  check('200 runs with both packs: 7 dinners, no repeats, max 2 per chapter, no desserts/sauces/sides', !problems.length, problems.slice(0, 5).join('; '));
+  check('Surprise me uses Italian recipes too', sawItalian);
+  const copycatOnly = ALL.filter((r) => r.pack === 'copycat');
+  check('with only copycat open, it never picks Italian', Array.from({ length: 50 }, () => surprisePicks(7, [], copycatOnly, rand)).every((p) => p.every((r) => r.pack === 'copycat')));
+
+  const risotto = ALL.find((r) => r.rid === 'italian:4');
+  eq('an Italian recipe without an estimate is not counted', mealMoney(risotto, 1).priced, false);
+  addEstimates({ restaurantPrices: cfg.restaurantPrices, costPerServing: cfg.costPerServing, servings: cfg.servings });
+  eq('with estimates: Italian risotto ×2 money', mealMoney(risotto, 2), { servings: 8, home: 20, restaurant: 136, saved: 116, priced: true });
+  check('every fake Italian recipe has a home cost and a price in test mode', ALL.filter((r) => r.pack === 'italian').every((r) => homeCost(r) > 0 && restaurantPrice(r) > 0));
+  check('copycat Nº 5 and Italian Nº 5 are different recipes for money', restaurantPrice(ALL.find((r) => r.rid === 'copycat:5')) !== restaurantPrice(ALL.find((r) => r.rid === 'italian:5')));
+  eq('Combined list adds garlic across packs', mergeTexts([scaleLine('3 cloves garlic, minced', 1), scaleLine('2 cloves garlic, minced', 2)]), ['7 cloves garlic']);
+} catch (e) {
+  check('pack tests ran', false, e && (e.stack || e.message || String(e)));
+}
+
+const failed = results.filter((r) => !r.ok);
+document.getElementById('summary').textContent = failed.length ? `${failed.length} of ${results.length} checks FAILED` : `All ${results.length} checks passed.`;
+document.getElementById('summary').style.color = failed.length ? 'var(--bad)' : 'var(--ok)';
+window.__testResults = { total: results.length, failed, results };
+</script>
+</body>
+</html>

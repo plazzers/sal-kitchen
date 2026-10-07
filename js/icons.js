@@ -32,6 +32,7 @@ const P = {
   calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
   shuffle: '<path d="M3 7h3.5c2 0 3.2 1 4.3 2.6l2.4 4.8c1.1 1.6 2.3 2.6 4.3 2.6H21M3 17h3.5c1.5 0 2.5-.6 3.4-1.6M14.1 8.6c.9-1 1.9-1.6 3.4-1.6H21M18 4l3 3-3 3M18 14l3 3-3 3"/>',
   move: '<path d="M5 12h14M15 8l4 4-4 4M9 8 5 12l4 4"/>',
+  lock: '<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/><path d="M12 14.5v2.5"/>',
   mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 6.5 8.5 6.5 8.5-6.5"/>',
 };
 

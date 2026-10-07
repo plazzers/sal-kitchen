@@ -1,0 +1,28 @@
+{
+ "note": "TEST MODE ONLY (localhost + ?packs=test). Never used by the real app.",
+ "accessCodeHashes": [
+  "1cd718950f14bc62d0827a4d99c3dffad6678f0b4de32a8a8e586bf00e7c39b8",
+  "554b8ec152a9921303dc4a327f0e0608e3416a7d23cd66d7e9172fd573f0c883",
+  "98d0fbd14229281f5b6465b29d35b01d95565fd2d7498091925a38d22a468990",
+  "7f420e3a7b16b4999a0d7316af39b36ae185ffe36cb8870261bbd303a3aaaf8d",
+  "fa5db8bda77d43b0f97ee2be9ed628b042f8e41267bd6c7664cd5e704ae75a13"
+ ],
+ "restaurantPrices": {
+  "italian:1": 9,
+  "italian:2": 15,
+  "italian:3": 15,
+  "italian:4": 17,
+  "italian:5": 19,
+  "italian:6": 22,
+  "italian:7": 14,
+  "italian:8": 5,
+  "italian:9": 2,
+  "italian:10": 8
+ },
+ "costPerServing": {
+  "italian:9": 0.4
+ },
+ "servings": {
+  "italian:9": 8
+ }
+}

@@ -23,14 +23,14 @@
 <body>
 <main>
   <h1>Planner self-tests</h1>
-  <p>Checks the week planner, the combined shopping list and the money numbers. It uses its own test storage and never touches your saved recipes or plans.</p>
+  <p>Checks the week planner, the combined shopping list and the money numbers. It uses the TEST copy of the recipes in <code>tests/fixtures/</code> and its own test storage, so it never touches your saved recipes or plans.</p>
   <p id="summary" role="status">Running…</p>
   <div id="out"></div>
 </main>
 <script src="../js/sha256.js"></script>
 <script type="module">
-import { RECIPES } from '../data/recipes.js';
 import { COST_PER_SERVING } from '../data/costs.js';
+import { unwrapWithCode, importContentKey, decryptPack } from '../js/packcrypto.js';
 import { mergeTexts, parseSimple, isPantryLine, pantryNames } from '../js/merge.js';
 import { parseCostText, homeCost, restaurantPrice, baseServings, mealMoney } from '../js/money.js';
 import { surprisePicks, canAutoPick, DESSERTS, SAUCES_CHAPTER, MAX_PER_CHAPTER } from '../js/plan.js';
@@ -56,6 +56,12 @@ function check(name, ok, detail = '') {
   out.lastElementChild.appendChild(li);
 }
 const eq = (name, got, want) => check(name, JSON.stringify(got) === JSON.stringify(want), `got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`);
+
+// The copycat recipes, from the TEST pack (opened with a test code, like the app does).
+const packFile = await (await fetch('fixtures/copycat.pack.json', { cache: 'no-cache' })).json();
+const packData = await decryptPack(packFile, await importContentKey(await unwrapWithCode(packFile, 'SAL-TEST-AAAA-1111')));
+const RECIPES = packData.recipes.map((r) => ({ ...r, pack: 'copycat', rid: `copycat:${r.num}` }));
+const byNum = (n) => RECIPES.find((r) => r.num === n);
 
 // ---------- 1. Ingredient merge rules ----------
 group('Combined shopping list: merge rules');
@@ -94,6 +100,9 @@ check('"1 red bell pepper" is NOT a staple', !isPantryLine('1 red bell pepper', 
 check('"Salt, black pepper, pinch of nutmeg" is NOT (nutmeg)', !isPantryLine('Salt, black pepper, pinch of nutmeg', names));
 check('"4 tbsp butter + 2 tbsp olive oil" is NOT (olive oil not chosen)', !isPantryLine('4 tbsp butter + 2 tbsp olive oil', names));
 check('nothing hidden when no staples are chosen', !isPantryLine('2 tsp salt', pantryNames([], [])));
+check('a Combined amount "3/4 cup + 2 tbsp butter" is a staple', isPantryLine('3/4 cup + 2 tbsp butter', names));
+check('every Combined butter row is a staple', mergeTexts(['4 tbsp butter', '1/2 cup butter, melted', '2 tbsp butter', '1 tsp butter']).every((l) => isPantryLine(l, names)));
+check('"1/4 cup + 1 tsp garlic" is NOT (garlic not chosen)', !isPantryLine('1/4 cup + 1 tsp garlic', names));
 
 // ---------- 2. Costs ----------
 group('Money: cost parsing for all 33 recipes');
@@ -104,7 +113,7 @@ eq('"about $0.25 each" is not per serving', parseCostText('about $0.25 each'), n
 eq('"about $2 for the whole batch" is not per serving', parseCostText('about $2 for the whole batch'), null);
 for (const r of RECIPES) {
   const parsed = parseCostText(r.cost);
-  const manual = COST_PER_SERVING[r.num];
+  const manual = COST_PER_SERVING[r.rid];
   const h = homeCost(r);
   const p = restaurantPrice(r);
   const sv = baseServings(r);
@@ -112,8 +121,9 @@ for (const r of RECIPES) {
     typeof h === 'number' && h > 0 && typeof p === 'number' && p > 0 && sv > 0 && p >= h && (manual != null || parsed != null),
     `home=${h} restaurant=${p} servings=${sv}`);
 }
-const mm = mealMoney(RECIPES.find((r) => r.num === 5), 2);
-eq('Chicken Parmigiana ×2 money', mm, { servings: 8, home: 24, restaurant: 144, saved: 120 });
+const mm = mealMoney(byNum(5), 2);
+eq('Chicken Parmigiana ×2 money', mm, { servings: 8, home: 24, restaurant: 144, saved: 120, priced: true });
+eq('a recipe with no price estimate counts as $0, never a guess', mealMoney({ rid: 'italian:999', serves: '4', cost: 'about $2 per plate' }, 1), { servings: 4, home: 0, restaurant: 0, saved: 0, priced: false });
 
 // ---------- 3. Surprise me ----------
 group('Surprise me: 200 random runs');
@@ -126,11 +136,11 @@ for (let run = 0; run < 200; run++) {
   const nPreset = Math.floor(rand() * 4);
   while (preset.length < nPreset) {
     const r = RECIPES[Math.floor(rand() * RECIPES.length)];
-    if (!preset.includes(r.num)) preset.push(r.num);
+    if (!preset.includes(r.rid)) preset.push(r.rid);
   }
   const empty = 7 - preset.length;
   const picks = surprisePicks(empty, preset, RECIPES, rand);
-  const all = [...preset, ...picks.map((r) => r.num)];
+  const all = [...preset, ...picks.map((r) => r.rid)];
   if (new Set(all).size !== all.length) problems.push(`run ${run}: repeat`);
   if (picks.length !== empty) problems.push(`run ${run}: filled ${picks.length} of ${empty}`);
   for (const r of picks) {
@@ -139,9 +149,9 @@ for (let run = 0; run < 200; run++) {
     if (!canAutoPick(r)) problems.push(`run ${run}: not a dinner ${r.title}`);
   }
   const perChapter = {};
-  all.forEach((n) => { const c = RECIPES.find((r) => r.num === n).chapter; perChapter[c] = (perChapter[c] || 0) + 1; });
+  all.forEach((n) => { const c = RECIPES.find((r) => r.rid === n).chapter; perChapter[c] = (perChapter[c] || 0) + 1; });
   const presetPer = {};
-  preset.forEach((n) => { const c = RECIPES.find((r) => r.num === n).chapter; presetPer[c] = (presetPer[c] || 0) + 1; });
+  preset.forEach((n) => { const c = RECIPES.find((r) => r.rid === n).chapter; presetPer[c] = (presetPer[c] || 0) + 1; });
   for (const c of Object.keys(perChapter)) {
     if (perChapter[c] > Math.max(MAX_PER_CHAPTER, presetPer[c] || 0)) problems.push(`run ${run}: ${perChapter[c]} from chapter ${c}`);
   }
@@ -149,7 +159,7 @@ for (let run = 0; run < 200; run++) {
 check('no repeats, max 2 per chapter, no desserts or sauces, every empty dinner filled', !problems.length, problems.slice(0, 5).join('; '));
 const full = surprisePicks(7, [], RECIPES, rand);
 check('empty week gets 7 dinners', full.length === 7, `got ${full.length}`);
-check('nothing to pick when everything is used', surprisePicks(3, RECIPES.map((r) => r.num), RECIPES, rand).length === 0);
+check('nothing to pick when everything is used', surprisePicks(3, RECIPES.map((r) => r.rid), RECIPES, rand).length === 0);
 
 // ---------- 4. ISO weeks ----------
 group('ISO week math');
@@ -170,7 +180,7 @@ eq('adding days across a DST change', weeks.addDays('2026-11-01', 1), '2026-11-0
 eq('adding days in spring', weeks.addDays('2026-03-08', 1), '2026-03-09');
 
 // ---------- 5. Storage: upgrade + backup ----------
-group('Storage: upgrade from v1 and backup round-trip');
+group('Storage: upgrade from v1 (recipe numbers become copycat:<number>) and backup round-trip');
 const deleteDb = (name) => new Promise((res) => { const r = indexedDB.deleteDatabase(name); r.onsuccess = r.onerror = r.onblocked = () => res(); });
 try {
   // A database exactly as the v1 app left it.
@@ -197,9 +207,10 @@ try {
   });
   db.useDatabase(UP);
   eq('v1 unlock survives the upgrade', !!(await db.getMeta('unlocked')), true);
-  eq('v1 favorites survive', await db.getMeta('favorites'), [2, 5]);
+  eq('v1 favorites survive', await db.getMeta('favorites'), ['copycat:2', 'copycat:5']);
   eq('v1 shopping list survives', (await db.getMeta('shopping')).groups[0].items[0], { text: '1 lb fettuccine', checked: true });
-  eq('v1 ticks survive', await db.getProgress(5), { num: 5, ticks: [0, 2], done: [1], factor: 2 });
+  eq('v1 shopping group points at copycat:2', (await db.getMeta('shopping')).groups[0].rid, 'copycat:2');
+  eq('v1 ticks survive', await db.getProgress('copycat:5'), { rid: 'copycat:5', ticks: [0, 2], done: [1], factor: 2 });
   eq('new plans store is there and empty', await db.listPlans(), []);
   eq('new savings store is there and empty', await db.listSavings(), []);
   await db.closeDB();
@@ -209,15 +220,15 @@ try {
   const T = 'sals-kitchen-selftest';
   await deleteDb(T);
   db.useDatabase(T);
-  await db.setMeta('favorites', [1, 9]);
+  await db.setMeta('favorites', ['copycat:1', 'copycat:9']);
   await db.setMeta('shopping', { groups: [], custom: [{ id: 'c1', text: 'paper towels', checked: false }] });
-  await db.putProgress({ num: 9, ticks: [1], done: [], factor: 1 });
-  await db.putPlanWeek({ week: '2026-W41', days: { '2026-10-05': { dinner: { num: 5, factor: 2 } }, '2026-10-06': { dinner: { num: 5, factor: 1, leftover: { date: '2026-10-05', meal: 'dinner' } } } } });
-  await db.putSaving({ id: 's1', date: '2026-10-05', meal: 'dinner', num: 5, factor: 2, servings: 8, home: 24, restaurant: 144, saved: 120, at: '2026-10-05T20:00:00Z' });
+  await db.putProgress({ rid: 'copycat:9', ticks: [1], done: [], factor: 1 });
+  await db.putPlanWeek({ week: '2026-W41', days: { '2026-10-05': { dinner: { rid: 'copycat:5', factor: 2 } }, '2026-10-06': { dinner: { rid: 'copycat:5', factor: 1, leftover: { date: '2026-10-05', meal: 'dinner' } } } } });
+  await db.putSaving({ id: 's1', date: '2026-10-05', meal: 'dinner', rid: 'copycat:5', factor: 2, servings: 8, home: 24, restaurant: 144, saved: 120, at: '2026-10-05T20:00:00Z' });
   await db.setMeta('pantry', { ids: ['salt'], custom: ['honey'] });
   await db.setMeta('planSettings', { weekStart: 'sun', lunch: true, hideMoney: false, combined: true });
   const backup = JSON.parse(JSON.stringify(await db.exportAll()));
-  eq('backup format is 2', backup.format, 2);
+  eq('backup format is 3', backup.format, 3);
   check('backup holds plans, savings, pantry and settings', backup.plans.length === 1 && backup.savings.length === 1 && backup.pantry.custom[0] === 'honey' && backup.planSettings.weekStart === 'sun');
 
   // Wipe, then restore.
@@ -226,7 +237,7 @@ try {
   await db.setMeta('pantry', { ids: [], custom: [] });
   await db.setMeta('favorites', []);
   await db.importAll(db.validateBackup(backup));
-  eq('restored favorites', await db.getMeta('favorites'), [1, 9]);
+  eq('restored favorites', await db.getMeta('favorites'), ['copycat:1', 'copycat:9']);
   eq('restored plans (extra week removed)', (await db.listPlans()).map((w) => w.week), ['2026-W41']);
   eq('restored leftover slot', (await db.getPlanWeek('2026-W41')).days['2026-10-06'].dinner.leftover, { date: '2026-10-05', meal: 'dinner' });
   eq('restored savings', (await db.listSavings()).map((x) => x.saved), [120]);
@@ -236,8 +247,8 @@ try {
   // An old (format 1) backup still restores, and leaves planner data alone.
   const old = { app: 'sals-kitchen', format: 1, exportedAt: '2026-09-01T10:00:00.000Z', favorites: [3], shopping: { groups: [], custom: [] }, progress: [{ num: 3, ticks: [0], done: [], factor: 1 }] };
   await db.importAll(db.validateBackup(old));
-  eq('old backup: favorites restored', await db.getMeta('favorites'), [3]);
-  eq('old backup: ticks restored', (await db.getProgress(3)).ticks, [0]);
+  eq('old backup: favorites restored', await db.getMeta('favorites'), ['copycat:3']);
+  eq('old backup: ticks restored', (await db.getProgress('copycat:3')).ticks, [0]);
   eq('old backup: plans left alone', (await db.listPlans()).length, 1);
   eq('old backup: savings left alone', (await db.listSavings()).length, 1);
 

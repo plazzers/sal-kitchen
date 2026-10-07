@@ -1,0 +1,34 @@
+{
+ "note": "What the v1/v2 app saved in IndexedDB 'sals-kitchen' (recipes saved by number). v1 had only meta + progress.",
+ "meta": {
+  "unlocked": { "at": "2026-03-14T18:22:05.000Z" },
+  "favorites": [2, 5, 30],
+  "shopping": {
+   "groups": [
+    { "id": "g-mfx1-abc123", "recipeNum": 5, "title": "Chicken Parmigiana", "factor": 2, "items": [
+      { "text": "4 boneless skinless chicken breasts", "checked": true },
+      { "text": "2 cups marinara (see Sauces chapter)", "checked": false } ] },
+    { "id": "g-mfx2-def456", "recipeNum": 30, "title": "Sunday Marinara", "factor": 1, "items": [
+      { "text": "2 × 28 oz cans whole San Marzano tomatoes", "checked": false } ] }
+   ],
+   "custom": [ { "id": "c-mfx3-ghi789", "text": "paper towels", "checked": false } ]
+  },
+  "installBannerDismissed": true,
+  "lastBackup": "2026-09-30T08:00:00.000Z",
+  "pantry": { "ids": ["salt", "pepper"], "custom": ["honey"] },
+  "planSettings": { "weekStart": "mon", "lunch": true, "hideMoney": false, "combined": true }
+ },
+ "progress": [
+  { "num": 5, "ticks": [0, 2], "done": [1], "factor": 2 },
+  { "num": 30, "ticks": [], "done": [0, 1], "factor": 1 }
+ ],
+ "plans": [
+  { "week": "2026-W41", "days": {
+    "2026-10-05": { "dinner": { "num": 5, "factor": 2, "made": true, "savedId": "s-mfx4-jkl012" } },
+    "2026-10-06": { "dinner": { "num": 5, "factor": 1, "leftover": { "date": "2026-10-05", "meal": "dinner" } }, "lunch": { "num": 17, "factor": 0.5 } }
+  } }
+ ],
+ "savings": [
+  { "id": "s-mfx4-jkl012", "date": "2026-10-05", "meal": "dinner", "num": 5, "factor": 2, "servings": 8, "home": 24, "restaurant": 144, "saved": 120, "at": "2026-10-05T20:00:00.000Z" }
+ ]
+}

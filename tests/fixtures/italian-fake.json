@@ -1,0 +1,95 @@
+{
+  "id": "italian",
+  "title": "Sal's Italian Kitchen (TEST PACK)",
+  "chapters": [
+    { "num": 1, "title": "Antipasti", "intro": "Test chapter. Placeholder text, not from the book." },
+    { "num": 2, "title": "Pasta & Risotto", "intro": "Test chapter. Placeholder text, not from the book." },
+    { "num": 3, "title": "Secondi", "intro": "Test chapter. Placeholder text, not from the book." },
+    { "num": 4, "title": "Pizza", "intro": "Test chapter. Placeholder text, not from the book." },
+    { "num": 5, "title": "Contorni", "intro": "Test chapter. Placeholder text, not from the book." },
+    { "num": 6, "title": "Sughi", "intro": "Test chapter. Placeholder text, not from the book." },
+    { "num": 7, "title": "Dolci", "intro": "Test chapter. Placeholder text, not from the book." }
+  ],
+  "recipes": [
+    {
+      "num": 1, "chapter": 1, "title": "Test Bruschetta",
+      "subtitle": "Placeholder test recipe",
+      "serves": "4", "time": "15 min", "cost": "about $1 per serving",
+      "ingredients": ["4 slices crusty bread", "2 tomatoes, diced", "1 clove garlic", "2 tbsp olive oil", "Salt"],
+      "steps": ["Toast the bread 3 minutes.", "Rub with garlic, top with tomato and oil."],
+      "tip": "Test tip. Placeholder text."
+    },
+    {
+      "num": 2, "chapter": 2, "title": "Test Spaghetti Aglio e Olio",
+      "subtitle": "Placeholder test recipe",
+      "serves": "4", "time": "20 min", "cost": "about $1.50 per plate",
+      "ingredients": ["1 lb spaghetti", "6 cloves garlic, sliced", "1/2 cup olive oil", "1/2 tsp red pepper flakes", "2 tbsp chopped parsley"],
+      "steps": ["Boil the spaghetti 9 minutes.", "Warm the garlic in the oil 4 minutes.", "Toss everything together."],
+      "tip": "Test tip. Placeholder text."
+    },
+    {
+      "num": 3, "chapter": 2, "title": "Test Penne Arrabbiata",
+      "subtitle": "Placeholder test recipe",
+      "serves": "4", "time": "25 min", "cost": "about $2 per plate",
+      "ingredients": ["1 lb penne", "3 cloves garlic, minced", "1 can crushed tomatoes", "1 tsp red pepper flakes", "2 tbsp olive oil"],
+      "steps": ["Simmer the sauce 15 minutes.", "Boil the penne 11 minutes and toss."],
+      "tip": "Test tip. Placeholder text."
+    },
+    {
+      "num": 4, "chapter": 2, "title": "Test Risotto",
+      "subtitle": "Placeholder test recipe",
+      "serves": "4", "time": "35 min", "cost": "about $2.50 per plate",
+      "ingredients": ["1 1/2 cups arborio rice", "1 onion, diced", "6 cups chicken broth", "2 tbsp butter", "1/2 cup grated parmesan"],
+      "steps": ["Soften the onion 5 minutes.", "Add the rice and broth a ladle at a time, about 18 minutes.", "Stir in butter and cheese."],
+      "tip": "Test tip. Placeholder text."
+    },
+    {
+      "num": 5, "chapter": 3, "title": "Test Chicken Cacciatora",
+      "subtitle": "Placeholder test recipe",
+      "serves": "4", "time": "50 min", "cost": "about $3.50 per plate",
+      "ingredients": ["2 lb chicken thighs", "1 onion, sliced", "2 cloves garlic, minced", "1 can crushed tomatoes", "1 cup chicken broth"],
+      "steps": ["Brown the chicken 8 minutes.", "Add the rest and simmer 30 minutes."],
+      "tip": "Test tip. Placeholder text."
+    },
+    {
+      "num": 6, "chapter": 3, "title": "Test Saltimbocca",
+      "subtitle": "Placeholder test recipe",
+      "serves": "4", "time": "25 min", "cost": "about $4 per plate",
+      "ingredients": ["8 thin veal cutlets", "8 slices prosciutto", "8 sage leaves", "2 tbsp butter", "1/2 cup white wine"],
+      "steps": ["Fry the cutlets 2 minutes a side.", "Add the wine and reduce 3 minutes."],
+      "tip": "Test tip. Placeholder text."
+    },
+    {
+      "num": 7, "chapter": 4, "title": "Test Pizza Margherita",
+      "subtitle": "Placeholder test recipe",
+      "serves": "2", "time": "2 hr (mostly rising)", "cost": "about $2 per serving",
+      "ingredients": ["1 lb pizza dough", "1/2 cup tomato sauce", "8 oz fresh mozzarella", "6 basil leaves", "1 tbsp olive oil"],
+      "steps": ["Let the dough rise 90 minutes.", "Bake at 500°F for 10 minutes."],
+      "tip": "Test tip. Placeholder text."
+    },
+    {
+      "num": 8, "chapter": 5, "title": "Test Roasted Potatoes",
+      "subtitle": "Placeholder test recipe",
+      "serves": "4", "time": "45 min", "cost": "about $0.75 per serving",
+      "ingredients": ["2 lb potatoes, cubed", "3 tbsp olive oil", "2 sprigs rosemary", "Salt and pepper"],
+      "steps": ["Roast at 425°F for 40 minutes."],
+      "tip": "Test tip. Placeholder text."
+    },
+    {
+      "num": 9, "chapter": 6, "title": "Test Tomato Sugo",
+      "subtitle": "Placeholder test recipe",
+      "serves": "about 4 cups", "time": "40 min", "cost": "about $3 for the whole pot",
+      "ingredients": ["2 cans whole tomatoes", "4 cloves garlic", "1/4 cup olive oil", "1 tsp salt"],
+      "steps": ["Simmer everything 35 minutes."],
+      "tip": "Test tip. Placeholder text."
+    },
+    {
+      "num": 10, "chapter": 7, "title": "Test Panna Cotta",
+      "subtitle": "Placeholder test recipe",
+      "serves": "6", "time": "4 hr (mostly chilling)", "cost": "about $1 per serving",
+      "ingredients": ["2 cups heavy cream", "1/3 cup sugar", "2 1/4 tsp gelatin", "1 tsp vanilla"],
+      "steps": ["Warm the cream and sugar 5 minutes.", "Stir in gelatin and vanilla, chill 4 hours."],
+      "tip": "Test tip. Placeholder text."
+    }
+  ]
+}
